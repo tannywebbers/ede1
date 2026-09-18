@@ -77,31 +77,39 @@ export default function Page() {
     finally { setLoading(false) }
   }
 
-  const extract = async () => {
-    if (!rows.length && !input.trim()) return setError('Fetch raw Kimbo data first.')
-    setLoading(true); setError(''); setLiveLog(['Starting extraction...']);
+  const sourceRows = () => rows.length ? rows : rowsFrom(JSON.parse(input))
+
+  const extract = () => {
     try {
-      const source = rows.length ? rows : rowsFrom(JSON.parse(input)); const enriched: ApiRow[] = []
+      const source = sourceRows(); if (!source.length) return setError('Fetch raw Kimbo data first.')
+      const next = extractFromRawInput(JSON.stringify(source), true)
+      setResult(next); setOutput(JSON.stringify(groupRecordsByApp(next.records), null, 2)); setOpenOutput(true); setStatus(`Extracted ${next.records.length} records. Use Update bank details to enrich them.`)
+    } catch (e) { setError(e instanceof Error ? e.message : 'Input is not valid JSON.'); setStatus('Extraction failed') }
+  }
+
+  const updateBankDetails = async () => {
+    const source = sourceRows(); if (!source.length) return setError('Fetch raw Kimbo data first.')
+    setLoading(true); setError(''); setLiveLog(['Starting bank detail update...']); const enriched: ApiRow[] = []
+    try {
       for (let i = 0; i < source.length; i++) {
-        const row = source[i]; setStatus(`Extracting bank details ${i + 1} of ${source.length}...`); setLiveLog((log) => [...log, `GET order/${row.id || 'missing id'} (${i + 1}/${source.length})`])
-        if (!row.id) { enriched.push(row); continue }
+        const row = source[i]; setStatus(`Getting bank details ${i + 1} of ${source.length}...`)
+        if (!row.id) { enriched.push({ ...row, _bankDetailError: 'Missing case id' }); setLiveLog((log) => [...log, `FAILED ${row.orderNum || 'row'}: missing case id`]); continue }
         try {
           const response = await kimbo(`/adminApi/system/loan/order/${encodeURIComponent(String(row.id))}`, token)
-          const detail = response?.data && typeof response.data === 'object' ? response.data : response
+          const detail = response?.data?.data ?? response?.data ?? response
           const matched = detail?.userId && row.userId && String(detail.userId) === String(row.userId)
           enriched.push({ ...row, accountNum: detail?.accountNum, accountName: detail?.accountName, bankName: detail?.bankName, detailUserId: detail?.userId, _bankMatched: matched, _bankDetailLoaded: true })
-          setLiveLog((log) => [...log, `${matched ? 'MATCHED' : 'CHECKED'} userId ${row.userId || 'missing'} → ${detail?.bankName || 'no bank'}`])
-        } catch (detailError) { enriched.push({ ...row, _bankDetailError: detailError instanceof Error ? detailError.message : 'Bank detail request failed' }); setLiveLog((log) => [...log, `ERROR order/${row.id}: ${detailError instanceof Error ? detailError.message : 'request failed'}`]) }
+          setLiveLog((log) => [...log, `${matched ? 'SUCCESS' : 'CHECKED'} bank for ${row.orderNum || row.id}: ${detail?.bankName || 'no bank returned'}`])
+        } catch (e) { const message = e instanceof Error ? e.message : 'request failed'; enriched.push({ ...row, _bankDetailError: message }); setLiveLog((log) => [...log, `FAILED ${row.orderNum || row.id}: ${message}`]) }
       }
-      setRows(enriched); setInput(JSON.stringify(enriched, null, 2)); const next = extractFromRawInput(JSON.stringify(enriched), true); setResult(next); setOutput(JSON.stringify(groupRecordsByApp(next.records), null, 2)); setOpenOutput(true); setStatus(`Extracted ${next.records.length} records with account matching`)
-    } catch (e) { setError(e instanceof Error ? e.message : 'Input is not valid JSON.'); setStatus('Extraction failed') }
-    finally { setLoading(false) }
+      setRows(enriched); setInput(JSON.stringify(enriched, null, 2)); const next = extractFromRawInput(JSON.stringify(enriched), true); setResult(next); setOutput(JSON.stringify(groupRecordsByApp(next.records), null, 2)); setOpenOutput(true); setStatus(`Bank update complete: ${enriched.filter((r) => r._bankMatched).length} matched`)
+    } finally { setLoading(false); setTimeout(() => setLiveLog([]), 2500) }
   }
 
   const extractPhones = () => {
     const grouped = new Map<string, string[]>()
-    rows.forEach((row) => { const app = String(row.appName || 'Unknown app'); const phone = String(row.phone || row.phoneNumber || '').trim(); if (phone) grouped.set(app, [...(grouped.get(app) || []), phone]) })
-    const text = [...grouped].map(([app, phones]) => `${app}\n${[...new Set(phones)].join('\n')}`).join('\n\n'); setOutput(mode === 'plain' ? [...grouped].flatMap(([, phones]) => [...new Set(phones)]).join('\n') : text); setOpenOutput(true); setStatus(`Extracted ${mode} phones for ${grouped.size} apps`)
+    sourceRows().forEach((row) => { const app = String(row.appName || 'Unknown app'); const phone = String(row.phone || row.phoneNumber || '').trim(); if (phone) grouped.set(app, [...(grouped.get(app) || []), phone]) })
+    const text = [...grouped].map(([app, phones]) => `${app}\n${[...new Set(phones)].map((phone) => mode === 'personalized' ? `customers:${phone}` : phone).join('\n')}`).join('\n\n'); setOutput(text); setOpenOutput(true); setStatus(`Extracted ${mode} phones for ${grouped.size} apps`)
   }
 
   const extractContacts = async () => {
@@ -122,7 +130,7 @@ export default function Page() {
     if (!rows.length) return setError('Fetch Kimbo data first.')
     setLoading(true); setError(''); const logs: string[] = []
     for (let i = 0; i < rows.length; i++) { const row = rows[i]; const orderNum = String(row.orderNum || ''); if (!orderNum) continue; setStatus(`${action === 'sms' ? 'Sending SMS' : 'Saving remarks'} ${i + 1} of ${rows.length}...`); try { const payload = action === 'sms' ? { orderNum, templateId: Number(template), country: row.country || 'NG', appName: row.appName || '' } : { orderNum, reachOutBy, contactRelations, remark: remark || null, contactName: contactName || null, contactResult, collectionTag, contactNo: contactNo || null }; await kimbo(action === 'sms' ? '/adminApi/system/loan/collectionAssign/sendSms' : '/adminApi/system/loan/collectionRecord', token, 'POST', payload); logs.push(`SUCCESS ${orderNum}`) } catch (e) { logs.push(`FAILED ${orderNum}: ${e instanceof Error ? e.message : 'Unknown error'}`) } }
-    setOutput(logs.join('\n') || 'No order numbers found.'); setOpenOutput(true); setStatus(`${action === 'sms' ? 'SMS' : 'Remark'} run complete`); setLoading(false)
+    setOutput(logs.join('\n') || 'No order numbers found.'); setOpenOutput(true); setStatus(`${action === 'sms' ? 'SMS' : 'Remark'} run complete`); setLoading(false); setLiveLog(logs); setTimeout(() => setLiveLog([]), 2500)
   }
 
   const nav: [Tab, string][] = [['whatsapp', 'WhatsApp'], ['phones', 'Phone Extractor'], ['sms', 'SMS'], ['remarks', 'Remarks'], ['contacts', 'Contact Extractor'], ['settings', 'Settings']]
@@ -131,7 +139,7 @@ export default function Page() {
 
   return <main className="min-h-screen bg-muted/30 text-foreground"><header className="border-b bg-background"><div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-5"><div><p className="text-xs font-semibold uppercase tracking-[0.2em] text-primary">Collection workbench</p><h1 className="text-2xl font-semibold tracking-tight">Loan operations hub</h1></div><div className="flex items-center gap-2 text-xs text-muted-foreground"><Wifi className="size-4" />{status}</div></div><nav className="mx-auto flex max-w-7xl gap-1 overflow-x-auto px-6">{nav.map(([key, label]) => <button key={key} onClick={() => setTab(key)} className={`border-b-2 px-4 py-3 text-sm font-medium whitespace-nowrap ${tab === key ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>{label}</button>)}</nav></header>
     <div className="mx-auto grid max-w-7xl gap-6 p-6 lg:grid-cols-[minmax(0,1fr)_340px]"><section className="rounded-xl border bg-background p-5 shadow-sm"><div className="mb-5 flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-lg font-semibold">{tab === 'settings' ? 'Universal settings' : `${nav.find(([key]) => key === tab)?.[1]} workspace`}</h2><p className="text-sm text-muted-foreground">Fetch once, then run each section from the same clean data set.</p></div>{tab !== 'settings' && <div className="flex gap-2"><Button variant="outline" size="sm" onClick={clear}>Clear</Button>{output && <><Button variant="outline" size="sm" onClick={copy}><Copy data-icon="inline-start" />Copy</Button>{['whatsapp', 'phones', 'contacts'].includes(tab) && <Button variant="outline" size="sm" onClick={save}><Download data-icon="inline-start" />Save</Button>}</>}</div>}</div>
-      {tab === 'settings' ? <div className="max-w-xl"><div className="rounded-lg border bg-muted/30 p-4"><h3 className="font-medium">Kimbo API access</h3><p className="mt-1 text-sm text-muted-foreground">Stored only in this browser cache. It is never persisted by the server.</p><div className="mt-4 flex gap-2"><input value={token} onChange={(e) => setToken(e.target.value)} onFocus={loadToken} type="password" placeholder="Paste bearer token" className="min-w-0 flex-1 rounded-md border bg-background px-3 py-2 text-sm" /><Button onClick={saveToken}><Save data-icon="inline-start" />{saved ? 'Saved' : 'Save token'}</Button></div></div><div className="mt-4 rounded-lg border p-4 text-sm text-muted-foreground">Case list → detail lookup by <code>id</code> → matched <code>userId</code>, bank, account number, and account name. The detail request never uses <code>orderNum</code>.</div></div> : <><div className="mb-4 flex flex-wrap gap-2"><Button onClick={fetchLive} disabled={loading}>{loading ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <Globe data-icon="inline-start" />}Fetch from Kimbo</Button>{tab === 'whatsapp' && <Button variant="outline" onClick={() => setInput(EXAMPLE_DATA)}><FileJson data-icon="inline-start" />Load example</Button>}{tab === 'whatsapp' && <Button variant="outline" onClick={extract}><Upload data-icon="inline-start" />Extract</Button>}{tab === 'phones' && <Button variant="outline" onClick={extractPhones}><Upload data-icon="inline-start" />Extract phones</Button>}{tab === 'contacts' && <Button variant="outline" onClick={extractContacts}><Upload data-icon="inline-start" />Extract contacts</Button>}</div>
+      {tab === 'settings' ? <div className="max-w-xl"><div className="rounded-lg border bg-muted/30 p-4"><h3 className="font-medium">Kimbo API access</h3><p className="mt-1 text-sm text-muted-foreground">Stored only in this browser cache. It is never persisted by the server.</p><div className="mt-4 flex gap-2"><input value={token} onChange={(e) => setToken(e.target.value)} onFocus={loadToken} type="password" placeholder="Paste bearer token" className="min-w-0 flex-1 rounded-md border bg-background px-3 py-2 text-sm" /><Button onClick={saveToken}><Save data-icon="inline-start" />{saved ? 'Saved' : 'Save token'}</Button></div></div><div className="mt-4 rounded-lg border p-4 text-sm text-muted-foreground">Case list → detail lookup by <code>id</code> → matched <code>userId</code>, bank, account number, and account name. The detail request never uses <code>orderNum</code>.</div></div> : <><div className="mb-4 flex flex-wrap gap-2"><Button onClick={fetchLive} disabled={loading}>{loading ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <Globe data-icon="inline-start" />}Fetch from Kimbo</Button>{tab === 'whatsapp' && <Button variant="outline" onClick={() => setInput(EXAMPLE_DATA)}><FileJson data-icon="inline-start" />Load example</Button>}{tab === 'whatsapp' && <Button variant="outline" onClick={extract}><Upload data-icon="inline-start" />Extract</Button>}{tab === 'whatsapp' && <Button variant="outline" onClick={updateBankDetails} disabled={loading}><Wifi data-icon="inline-start" />Update bank details</Button>}{tab === 'phones' && <Button variant="outline" onClick={extractPhones}><Upload data-icon="inline-start" />Extract phones</Button>}{tab === 'contacts' && <Button variant="outline" onClick={extractContacts}><Upload data-icon="inline-start" />Extract contacts</Button>}</div>
         {(tab === 'whatsapp' || tab === 'phones' || tab === 'contacts') && <Panel title="Input data" open={openInput} onToggle={() => setOpenInput(!openInput)}><textarea value={input} onChange={(e) => setInput(e.target.value)} placeholder="Fetch from Kimbo or paste JSON here" className="min-h-44 w-full rounded-md border bg-background p-3 font-mono text-xs" /></Panel>}
         {tab === 'phones' && <div className="mt-4 flex gap-2"><Button variant={mode === 'personalized' ? 'default' : 'outline'} onClick={() => setMode('personalized')}>Personalized</Button><Button variant={mode === 'plain' ? 'default' : 'outline'} onClick={() => setMode('plain')}>Plain</Button></div>}
         {tab === 'sms' && <div className="flex flex-wrap items-end gap-3 rounded-lg border bg-muted/30 p-3 text-sm"><label className="flex flex-col gap-1">Template<select value={template} onChange={(e) => setTemplate(e.target.value)} className="rounded border bg-background px-2 py-2">{TEMPLATES.map((id, i) => <option key={id} value={id}>Template {i + 1} — {id}</option>)}</select></label><Button onClick={loadSmsTemplate} disabled={loading}>Preview template</Button><Button onClick={() => runAction('sms')} disabled={loading}>Send SMS to all</Button></div>}
