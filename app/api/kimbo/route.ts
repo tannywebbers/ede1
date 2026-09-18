@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 
 const ORIGIN = 'https://www.kimbo.world'
-const ALLOWED = ['/adminApi/system/loan/collectionAssign/collect/case/list', '/adminApi/system/loan/order/', '/adminApi/system/loan/userContact/app/list', '/adminApi/system/loan/collectionAssign/sendSms', '/adminApi/system/loan/collectionRecord']
+const ALLOWED = ['/adminApi/system/loan/collectionAssign/collect/case/list', '/adminApi/system/loan/order/', '/adminApi/system/loan/userContact/app/list', '/adminApi/system/loan/collectionAssign/app/getSmsContent', '/adminApi/system/loan/collectionAssign/sendSms', '/adminApi/system/loan/collectionRecord']
 
 export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => null)

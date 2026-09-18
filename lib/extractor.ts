@@ -92,7 +92,7 @@ function extractCandidates(input: string): RawRecord[] {
     } else if (typeof parsed === 'object' && parsed !== null) {
       if ('rows' in parsed && Array.isArray(parsed.rows)) {
         candidates.push(
-          ...parsed.rows.filter((item) => typeof item === 'object' && item !== null)
+          ...parsed.rows.filter((item: unknown) => typeof item === 'object' && item !== null)
         )
       } else {
         candidates.push(parsed)
@@ -118,7 +118,7 @@ function extractCandidates(input: string): RawRecord[] {
       } else if (typeof parsed === 'object' && parsed !== null) {
         if ('rows' in parsed && Array.isArray(parsed.rows)) {
           candidates.push(
-            ...parsed.rows.filter((item) => typeof item === 'object' && item !== null)
+            ...parsed.rows.filter((item: unknown) => typeof item === 'object' && item !== null)
           )
         } else {
           candidates.push(parsed)

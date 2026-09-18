@@ -1,100 +1,133 @@
 'use client'
 
 import { useMemo, useState } from 'react'
-import { extractFromRawInput, groupRecordsByApp, removeDuplicates } from '@/lib/extractor'
+import type { ReactNode } from 'react'
+import { extractFromRawInput, groupRecordsByApp } from '@/lib/extractor'
 import { EXAMPLE_DATA } from '@/lib/example-data'
-import { ExtractionResult, LoanRecord } from '@/lib/types'
+import type { ExtractionResult, LoanRecord } from '@/lib/types'
 import { Button } from '@/components/ui/button'
-import { Check, Copy, Download, FileJson, Globe, Loader2, Save, Settings2, Upload, Wifi } from 'lucide-react'
+import { ChevronDown, ChevronUp, Copy, Download, FileJson, Globe, Loader2, Save, Settings2, Upload, Wifi } from 'lucide-react'
 
 type Tab = 'whatsapp' | 'phones' | 'sms' | 'remarks' | 'contacts' | 'settings'
-type ApiRow = Record<string, unknown>
+type ApiRow = Record<string, any>
 const LIST_PATH = '/adminApi/system/loan/collectionAssign/collect/case/list?pageNum=1&pageSize=200&recordType=0'
-const templates = ['2057421681597583361', '2062494888535728129']
+const TEMPLATES = ['2062494888535728129', '2057421681597583361']
 
-function rowsFrom(data: unknown): ApiRow[] {
-  if (Array.isArray(data)) return data.flatMap(rowsFrom)
-  if (!data || typeof data !== 'object') return []
-  const obj = data as ApiRow
-  if (Array.isArray(obj.rows)) return obj.rows.filter((r): r is ApiRow => !!r && typeof r === 'object')
-  if (obj.data && typeof obj.data === 'object') return rowsFrom(obj.data)
-  return [obj]
+function rowsFrom(value: any): ApiRow[] {
+  if (Array.isArray(value)) return value.flatMap(rowsFrom)
+  if (!value || typeof value !== 'object') return []
+  if (Array.isArray(value.rows)) return value.rows.filter((row: any) => row && typeof row === 'object')
+  if (value.data) return rowsFrom(value.data)
+  return [value]
 }
 
 async function kimbo(path: string, token: string, method: 'GET' | 'POST' = 'GET', payload?: unknown) {
   const response = await fetch('/api/kimbo', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path, token, method, payload }) })
   const body = await response.json()
-  if (!response.ok) throw new Error(body.message || body.data?.msg || `Request failed (${response.status})`)
+  if (!response.ok) throw new Error(body.message || `Request failed (${response.status})`)
   if (body.data?.code && body.data.code !== 200) throw new Error(body.data.msg || `Kimbo returned code ${body.data.code}`)
   return body.data
 }
 
+function downloadFile(name: string, text: string, type = 'text/plain') {
+  const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob([text], { type })); link.download = name; link.click(); URL.revokeObjectURL(link.href)
+}
+
 export default function Page() {
   const [tab, setTab] = useState<Tab>('whatsapp')
+  const [token, setToken] = useState('')
+  const [rows, setRows] = useState<ApiRow[]>([])
   const [input, setInput] = useState('')
   const [result, setResult] = useState<ExtractionResult | null>(null)
-  const [rows, setRows] = useState<ApiRow[]>([])
-  const [token, setToken] = useState('')
-  const [saved, setSaved] = useState(false)
+  const [output, setOutput] = useState('')
   const [status, setStatus] = useState('Ready')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const [openInput, setOpenInput] = useState(true)
+  const [openOutput, setOpenOutput] = useState(false)
   const [mode, setMode] = useState<'personalized' | 'plain'>('personalized')
-  const [template, setTemplate] = useState(templates[0])
+  const [template, setTemplate] = useState(TEMPLATES[0])
+  const [templateText, setTemplateText] = useState('')
+  const [reachOutBy, setReachOutBy] = useState('Sms')
+  const [contactRelations, setContactRelations] = useState('Self')
   const [remark, setRemark] = useState('')
+  const [contactName, setContactName] = useState('')
   const [contactResult, setContactResult] = useState('No Reply')
-  const [output, setOutput] = useState('')
+  const [collectionTag, setCollectionTag] = useState('No Answer')
+  const [contactNo, setContactNo] = useState('')
 
-  const records = useMemo(() => result?.records ?? rows.map((r) => ({ loanId: String(r.orderNum ?? r.id ?? ''), name: String(r.customerName ?? ''), phone: String(r.phone ?? r.phoneNumber ?? ''), amount: Number(r.inpayAmount ?? 0), appType: String(r.appName ?? ''), dayType: Number(r.overdueDays ?? 0), accountDetails: [] } as LoanRecord)), [result, rows])
+  const records = useMemo(() => result?.records ?? rows.map((r) => ({ loanId: String(r.orderNum ?? ''), name: String(r.customerName ?? r.name ?? ''), phone: String(r.phone ?? r.phoneNumber ?? ''), amount: Number(r.inpayAmount ?? 0), appType: String(r.appName ?? ''), dayType: Number(r.overdueDays ?? 0), accountDetails: r.accountNum ? [{ bank: r.bankName, accountNumber: r.accountNum, accountName: r.accountName }] : [] } as LoanRecord)), [result, rows])
+  const apps = useMemo(() => [...new Set(rows.map((row) => String(row.appName || 'Unknown app')))], [rows])
 
-  const saveToken = () => { localStorage.setItem('kimbo-bearer-token', token.trim()); setSaved(true); setStatus('Bearer token saved in this browser'); setTimeout(() => setSaved(false), 1800) }
+  const saveToken = () => { localStorage.setItem('kimbo-bearer-token', token.trim()); setSaved(true); setStatus('Bearer token saved in browser cache'); setTimeout(() => setSaved(false), 1500) }
   const loadToken = () => setToken(localStorage.getItem('kimbo-bearer-token') || '')
-  const clear = () => { setInput(''); setRows([]); setResult(null); setOutput(''); setError(''); setStatus('Ready') }
+  const clear = () => { setRows([]); setResult(null); setOutput(''); setInput(''); setError(''); setStatus('Ready') }
 
   const fetchLive = async () => {
-    if (!token.trim()) { setError('Add and save a bearer token in Settings first.'); return }
-    setLoading(true); setError(''); setStatus('Fetching case list and bank details...')
+    if (!token.trim()) return setError('Save a bearer token in Settings before fetching.')
+    setLoading(true); setError(''); setStatus('Fetching case list...')
     try {
-      const first = await kimbo(LIST_PATH, token)
-      const cases = rowsFrom(first)
-      const enriched: ApiRow[] = []
-      for (const item of cases) {
-        const id = item.id
-        if (!id) { enriched.push(item); continue }
-        try { const detail = await kimbo(`/adminApi/system/loan/order/${encodeURIComponent(String(id))}`, token); enriched.push({ ...item, ...(detail?.data && typeof detail.data === 'object' ? detail.data : detail) }) }
-        catch (detailError) { enriched.push({ ...item, _detailError: detailError instanceof Error ? detailError.message : 'Bank detail request failed' }) }
+      const list = rowsFrom(await kimbo(LIST_PATH, token)); const enriched: ApiRow[] = []
+      for (let i = 0; i < list.length; i++) {
+        const row = list[i]; setStatus(`Fetching bank details ${i + 1} of ${list.length}...`)
+        if (!row.id) { enriched.push(row); continue }
+        try {
+          const detail = await kimbo(`/adminApi/system/loan/order/${encodeURIComponent(String(row.id))}`, token)
+          const detailRow = detail?.data && typeof detail.data === 'object' ? detail.data : detail
+          enriched.push({ ...row, ...detailRow, _bankDetailLoaded: true })
+        } catch (detailError) { enriched.push({ ...row, _bankDetailError: detailError instanceof Error ? detailError.message : 'Bank detail request failed' }) }
       }
-      setRows(enriched); setInput(JSON.stringify(enriched, null, 2)); setStatus(`Loaded ${enriched.length} cases with order details`)
+      setRows(enriched); setInput(JSON.stringify(enriched, null, 2)); setStatus(`Loaded ${enriched.length} cases and matched bank details`)
     } catch (e) { setError(e instanceof Error ? e.message : 'Token or network request failed.'); setStatus('Request failed') }
     finally { setLoading(false) }
   }
 
-  const extract = () => { const next = extractFromRawInput(input, true); setResult(next); setOutput(JSON.stringify(groupRecordsByApp(next.records), null, 2)); setStatus(`Extracted ${next.records.length} records`) }
-  const doAction = async (action: 'sms' | 'remark') => {
-    if (!token.trim()) { setError('Add and save a bearer token in Settings first.'); return }
-    const source = rows.length ? rows : rowsFrom(input ? JSON.parse(input) : [])
-    setLoading(true); setError(''); setOutput('')
-    const logs: string[] = []
-    for (const row of source) {
-      const orderNum = String(row.orderNum ?? '')
-      if (!orderNum) continue
-      try {
-        const path = action === 'sms' ? '/adminApi/system/loan/collectionAssign/sendSms' : '/adminApi/system/loan/collectionRecord'
-        const payload = action === 'sms' ? { orderNum, templateId: Number(template), country: row.country || 'NG', appName: row.appName || '' } : { orderNum, reachOutBy: 'Phone', contactRelations: 'Self', contactResult, collectionTag: contactResult, contactName: row.customerName || '', contactNo: row.phone || '', fraudVoucher: '', promisedTime: '', remark }
-        await kimbo(path, token, 'POST', payload); logs.push(`${action === 'sms' ? 'SMS SENT' : 'REPORT ADDED'} ${orderNum}`)
-      } catch (e) { logs.push(`FAILED ${action.toUpperCase()} ${orderNum}: ${e instanceof Error ? e.message : 'Unknown error'}`) }
-    }
-    setOutput(logs.join('\n') || 'No orderNum values found.'); setStatus(`${action === 'sms' ? 'SMS' : 'Report'} batch finished`); setLoading(false)
+  const extract = () => {
+    try {
+      const next = extractFromRawInput(input || JSON.stringify(rows), true); setResult(next); setOutput(JSON.stringify(groupRecordsByApp(next.records), null, 2)); setOpenOutput(true); setStatus(`Extracted ${next.records.length} records`)
+    } catch { setError('Input is not valid JSON.'); setStatus('Extraction failed') }
   }
 
-  const copy = () => { navigator.clipboard.writeText(output || input); setStatus('Copied output') }
-  const download = () => { const a = document.createElement('a'); a.href = `data:text/plain;charset=utf-8,${encodeURIComponent(output || input)}`; a.download = `${tab}-output.txt`; a.click() }
-  const nav: [Tab, string][] = [['whatsapp', 'WhatsApp'], ['phones', 'Phone Extractor'], ['sms', 'SMS'], ['remarks', 'Remarks'], ['contacts', 'Contact Extractor'], ['settings', 'Settings']]
+  const extractPhones = () => {
+    const grouped = new Map<string, string[]>()
+    rows.forEach((row) => { const app = String(row.appName || 'Unknown app'); const phone = String(row.phone || row.phoneNumber || '').trim(); if (phone) grouped.set(app, [...(grouped.get(app) || []), phone]) })
+    const text = [...grouped].map(([app, phones]) => `${app}\n${[...new Set(phones)].join('\n')}`).join('\n\n'); setOutput(text); setOpenOutput(true); setStatus(`Extracted phones for ${grouped.size} apps`)
+  }
 
-  return <main className="min-h-screen bg-muted/30 text-foreground"><header className="border-b bg-background"><div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-5"><div><p className="text-xs font-semibold uppercase tracking-[0.2em] text-primary">Collection workbench</p><h1 className="text-2xl font-semibold tracking-tight">Loan operations hub</h1></div><div className="flex items-center gap-2 text-xs text-muted-foreground"><Wifi className="size-4" /> {status}</div></div><nav className="mx-auto flex max-w-7xl gap-1 overflow-x-auto px-6">{nav.map(([key, label]) => <button key={key} onClick={() => setTab(key)} className={`border-b-2 px-4 py-3 text-sm font-medium whitespace-nowrap ${tab === key ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>{label}</button>)}</nav></header>
-    <div className="mx-auto grid max-w-7xl gap-6 p-6 lg:grid-cols-[minmax(0,1fr)_340px]">
-      <section className="rounded-xl border bg-background p-5 shadow-sm"><div className="mb-5 flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-lg font-semibold">{tab === 'settings' ? 'Universal settings' : `${nav.find(([key]) => key === tab)?.[1]} workspace`}</h2><p className="text-sm text-muted-foreground">All actions use the saved Kimbo bearer token.</p></div>{tab !== 'settings' && <div className="flex gap-2"><Button variant="outline" size="sm" onClick={clear}>Clear</Button><Button variant="outline" size="sm" onClick={copy}><Copy data-icon="inline-start" />Copy</Button><Button variant="outline" size="sm" onClick={download}><Download data-icon="inline-start" />Save</Button></div>}</div>
-      {tab === 'settings' ? <div className="max-w-xl space-y-5"><div className="rounded-lg border bg-muted/30 p-4"><h3 className="font-medium">Kimbo API access</h3><p className="mt-1 text-sm text-muted-foreground">The token is stored only in this browser&apos;s local cache and sent through the secure app proxy.</p><div className="mt-4 flex gap-2"><input value={token} onChange={(e) => setToken(e.target.value)} onFocus={loadToken} type="password" placeholder="Paste bearer token" className="min-w-0 flex-1 rounded-md border bg-background px-3 py-2 text-sm" /><Button onClick={saveToken}><Save data-icon="inline-start" />{saved ? 'Saved' : 'Save token'}</Button></div></div><div className="rounded-lg border p-4 text-sm text-muted-foreground"><p className="font-medium text-foreground">API flow</p><p className="mt-2">Case list → order detail by <code>id</code> → merged bank details. The order <code>id</code> is intentionally different from <code>orderNum</code>.</p></div></div> : <><div className="mb-4 flex flex-wrap gap-2"><Button onClick={fetchLive} disabled={loading}><Globe data-icon="inline-start" />{loading ? 'Working...' : 'Fetch from Kimbo'}</Button><Button variant="outline" onClick={() => setInput(EXAMPLE_DATA)}><FileJson data-icon="inline-start" />Load example</Button>{(tab === 'whatsapp' || tab === 'phones') && <Button variant="outline" onClick={extract}><Upload data-icon="inline-start" />Extract pasted data</Button>}</div>{(tab === 'sms' || tab === 'remarks') && <div className="mb-4 flex flex-wrap items-center gap-3 rounded-lg border bg-muted/30 p-3 text-sm">{tab === 'sms' ? <><label>Template <select value={template} onChange={(e) => setTemplate(e.target.value)} className="ml-2 rounded border bg-background px-2 py-1">{templates.map((id, i) => <option key={id} value={id}>Template {i + 1} — {id}</option>)}</select></label><Button size="sm" onClick={() => doAction('sms')} disabled={loading}>Send SMS to all</Button></> : <><input value={remark} onChange={(e) => setRemark(e.target.value)} placeholder="Remark" className="rounded border bg-background px-3 py-1.5" /><select value={contactResult} onChange={(e) => setContactResult(e.target.value)} className="rounded border bg-background px-2 py-1.5"><option>No Reply</option><option>Answered</option><option>No Answer</option><option>Wrong Number</option><option>Busy</option></select><Button size="sm" onClick={() => doAction('remark')} disabled={loading}>Add report to all</Button></>}</div>}{tab === 'phones' && <div className="mb-4 flex gap-2"><Button size="sm" variant={mode === 'personalized' ? 'default' : 'outline'} onClick={() => setMode('personalized')}>Personalized</Button><Button size="sm" variant={mode === 'plain' ? 'default' : 'outline'} onClick={() => setMode('plain')}>Plain</Button></div>}<div className="grid gap-4 lg:grid-cols-2"><textarea value={input} onChange={(e) => setInput(e.target.value)} placeholder="Paste raw JSON or fetch live data..." className="min-h-[430px] resize-y rounded-lg border bg-background p-3 font-mono text-xs outline-none focus:ring-2 focus:ring-ring" /><textarea readOnly value={output || (tab === 'phones' ? records.map((r) => mode === 'personalized' ? `${r.name}:${r.phone}` : r.phone).join('\n') : '')} placeholder="Output appears here..." className="min-h-[430px] resize-y rounded-lg border bg-muted/20 p-3 font-mono text-xs" /></div></>}</section>
-      <aside className="space-y-4"><div className="rounded-xl border bg-background p-5 shadow-sm"><h3 className="font-semibold">Run summary</h3><div className="mt-4 grid grid-cols-2 gap-3">{[['Cases', rows.length || result?.stats.rawCount || 0], ['Processed', result?.stats.processedCount || 0], ['Apps', result?.stats.uniqueApps.size || 0], ['Warnings', result?.stats.warningCount || 0]].map(([label, value]) => <div key={label} className="rounded-lg bg-muted/50 p-3"><p className="text-xs text-muted-foreground">{label}</p><p className="mt-1 text-xl font-semibold">{value}</p></div>)}</div></div>{error && <div role="alert" className="rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive"><p className="font-semibold">Request error</p><p className="mt-1">{error}</p></div>}<div className="rounded-xl border bg-background p-5 text-sm text-muted-foreground"><Settings2 className="mb-3 size-4 text-primary" /><p className="font-medium text-foreground">One token, every section</p><p className="mt-1">Configure access once in Settings. Live extraction reports authentication, API, and per-order detail errors instead of silently returning incomplete data.</p></div></aside>
-    </div></main>
+  const extractContacts = () => {
+    const grouped = new Map<string, string[]>()
+    rows.forEach((row) => { const name = String(row.customerName || row.name || 'Unknown customer'); const values = [row.phone || row.phoneNumber, row.contact1, row.contact2].filter(Boolean).map(String); grouped.set(name, [...(grouped.get(name) || []), ...values]) })
+    setOutput([...grouped].map(([name, numbers]) => `${name}\n${[...new Set(numbers)].join(',')}`).join('\n\n')); setOpenOutput(true); setStatus(`Extracted contacts for ${grouped.size} customers`)
+  }
+
+  const loadSmsTemplate = async () => {
+    const row = rows[0]; if (!row?.orderNum) return setError('Fetch Kimbo data first so a template can be previewed.')
+    setLoading(true); setError(''); try { const query = `/adminApi/system/loan/collectionAssign/app/getSmsContent?templateId=${template}&orderNum=${encodeURIComponent(row.orderNum)}&country=${row.country || 'NG'}&appName=${encodeURIComponent(row.appName || '')}`; const data = await kimbo(query, token); setTemplateText(JSON.stringify(data, null, 2)); setStatus('SMS template loaded') } catch (e) { setError(e instanceof Error ? e.message : 'Template request failed.') } finally { setLoading(false) }
+  }
+
+  const runAction = async (action: 'sms' | 'remark') => {
+    if (!rows.length) return setError('Fetch Kimbo data first.')
+    setLoading(true); setError(''); const logs: string[] = []
+    for (let i = 0; i < rows.length; i++) { const row = rows[i]; const orderNum = String(row.orderNum || ''); if (!orderNum) continue; setStatus(`${action === 'sms' ? 'Sending SMS' : 'Saving remarks'} ${i + 1} of ${rows.length}...`); try { const payload = action === 'sms' ? { orderNum, templateId: Number(template), country: row.country || 'NG', appName: row.appName || '' } : { orderNum, reachOutBy, contactRelations, remark: remark || null, contactName: contactName || null, contactResult, collectionTag, contactNo: contactNo || null }; await kimbo(action === 'sms' ? '/adminApi/system/loan/collectionAssign/sendSms' : '/adminApi/system/loan/collectionRecord', token, 'POST', payload); logs.push(`SUCCESS ${orderNum}`) } catch (e) { logs.push(`FAILED ${orderNum}: ${e instanceof Error ? e.message : 'Unknown error'}`) } }
+    setOutput(logs.join('\n') || 'No order numbers found.'); setOpenOutput(true); setStatus(`${action === 'sms' ? 'SMS' : 'Remark'} run complete`); setLoading(false)
+  }
+
+  const nav: [Tab, string][] = [['whatsapp', 'WhatsApp'], ['phones', 'Phone Extractor'], ['sms', 'SMS'], ['remarks', 'Remarks'], ['contacts', 'Contact Extractor'], ['settings', 'Settings']]
+  const copy = () => { navigator.clipboard.writeText(output); setStatus('Output copied') }
+  const save = () => downloadFile(`${tab}-output.${tab === 'whatsapp' ? 'json' : 'txt'}`, output, tab === 'whatsapp' ? 'application/json' : 'text/plain')
+
+  return <main className="min-h-screen bg-muted/30 text-foreground"><header className="border-b bg-background"><div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-5"><div><p className="text-xs font-semibold uppercase tracking-[0.2em] text-primary">Collection workbench</p><h1 className="text-2xl font-semibold tracking-tight">Loan operations hub</h1></div><div className="flex items-center gap-2 text-xs text-muted-foreground"><Wifi className="size-4" />{status}</div></div><nav className="mx-auto flex max-w-7xl gap-1 overflow-x-auto px-6">{nav.map(([key, label]) => <button key={key} onClick={() => setTab(key)} className={`border-b-2 px-4 py-3 text-sm font-medium whitespace-nowrap ${tab === key ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>{label}</button>)}</nav></header>
+    <div className="mx-auto grid max-w-7xl gap-6 p-6 lg:grid-cols-[minmax(0,1fr)_340px]"><section className="rounded-xl border bg-background p-5 shadow-sm"><div className="mb-5 flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-lg font-semibold">{tab === 'settings' ? 'Universal settings' : `${nav.find(([key]) => key === tab)?.[1]} workspace`}</h2><p className="text-sm text-muted-foreground">Fetch once, then run each section from the same clean data set.</p></div>{tab !== 'settings' && <div className="flex gap-2"><Button variant="outline" size="sm" onClick={clear}>Clear</Button>{output && <><Button variant="outline" size="sm" onClick={copy}><Copy data-icon="inline-start" />Copy</Button><Button variant="outline" size="sm" onClick={save}><Download data-icon="inline-start" />Save</Button></>}</div>}</div>
+      {tab === 'settings' ? <div className="max-w-xl"><div className="rounded-lg border bg-muted/30 p-4"><h3 className="font-medium">Kimbo API access</h3><p className="mt-1 text-sm text-muted-foreground">Stored only in this browser cache. It is never persisted by the server.</p><div className="mt-4 flex gap-2"><input value={token} onChange={(e) => setToken(e.target.value)} onFocus={loadToken} type="password" placeholder="Paste bearer token" className="min-w-0 flex-1 rounded-md border bg-background px-3 py-2 text-sm" /><Button onClick={saveToken}><Save data-icon="inline-start" />{saved ? 'Saved' : 'Save token'}</Button></div></div><div className="mt-4 rounded-lg border p-4 text-sm text-muted-foreground">Case list → detail lookup by <code>id</code> → matched <code>userId</code>, bank, account number, and account name. The detail request never uses <code>orderNum</code>.</div></div> : <><div className="mb-4 flex flex-wrap gap-2"><Button onClick={fetchLive} disabled={loading}>{loading ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <Globe data-icon="inline-start" />}Fetch from Kimbo</Button>{tab === 'whatsapp' && <Button variant="outline" onClick={() => setInput(EXAMPLE_DATA)}><FileJson data-icon="inline-start" />Load example</Button>}{tab === 'whatsapp' && <Button variant="outline" onClick={extract}><Upload data-icon="inline-start" />Extract</Button>}{tab === 'phones' && <Button variant="outline" onClick={extractPhones}><Upload data-icon="inline-start" />Extract phones</Button>}{tab === 'contacts' && <Button variant="outline" onClick={extractContacts}><Upload data-icon="inline-start" />Extract contacts</Button>}</div>
+        {(tab === 'whatsapp' || tab === 'phones' || tab === 'contacts') && <Panel title="Input data" open={openInput} onToggle={() => setOpenInput(!openInput)}><textarea value={input} onChange={(e) => setInput(e.target.value)} placeholder="Fetch from Kimbo or paste JSON here" className="min-h-44 w-full rounded-md border bg-background p-3 font-mono text-xs" /></Panel>}
+        {tab === 'whatsapp' && <div className="mt-4 flex gap-2"><Button variant={mode === 'personalized' ? 'default' : 'outline'} onClick={() => setMode('personalized')}>Personalized</Button><Button variant={mode === 'plain' ? 'default' : 'outline'} onClick={() => setMode('plain')}>Plain</Button></div>}
+        {tab === 'sms' && <div className="flex flex-wrap items-end gap-3 rounded-lg border bg-muted/30 p-3 text-sm"><label className="flex flex-col gap-1">Template<select value={template} onChange={(e) => setTemplate(e.target.value)} className="rounded border bg-background px-2 py-2">{TEMPLATES.map((id, i) => <option key={id} value={id}>Template {i + 1} — {id}</option>)}</select></label><Button onClick={loadSmsTemplate} disabled={loading}>Preview template</Button><Button onClick={() => runAction('sms')} disabled={loading}>Send SMS to all</Button></div>}
+        {tab === 'remarks' && <div className="grid gap-3 rounded-lg border bg-muted/30 p-3 text-sm sm:grid-cols-2">{[['Reach out by', reachOutBy, setReachOutBy, ['Phone', 'Whatsapp', 'Sms']], ['Contact relations', contactRelations, setContactRelations, ['Self', 'Contact']], ['Contact result', contactResult, setContactResult, ['No Reply']], ['Collection tag', collectionTag, setCollectionTag, ['No Answer', 'Sent Unread', 'Read', 'Unavailable', 'Not on whatsapp']]].map(([label, value, setter, options]: any) => <label key={label as string} className="flex flex-col gap-1">{label as string}<select value={value as string} onChange={(e) => setter(e.target.value)} className="rounded border bg-background px-2 py-2">{options.map((option: string) => <option key={option}>{option}</option>)}</select></label>)}<input placeholder="Remark (optional)" value={remark} onChange={(e) => setRemark(e.target.value)} className="rounded border bg-background px-3 py-2" /><input placeholder="Contact name (optional)" value={contactName} onChange={(e) => setContactName(e.target.value)} className="rounded border bg-background px-3 py-2" /><input placeholder="Contact no. (optional)" value={contactNo} onChange={(e) => setContactNo(e.target.value)} className="rounded border bg-background px-3 py-2" /><Button onClick={() => runAction('remark')} disabled={loading}>Save remarks for all</Button></div>}
+        {templateText && <Panel title="SMS template response" open={true} onToggle={() => setTemplateText('')}><pre className="max-h-52 overflow-auto whitespace-pre-wrap text-xs">{templateText}</pre></Panel>}
+        {output && <Panel title="Output" open={openOutput} onToggle={() => setOpenOutput(!openOutput)}><pre className="max-h-[30rem] overflow-auto whitespace-pre-wrap rounded-md bg-muted/40 p-4 text-xs">{output}</pre></Panel>}
+      </>}</section>
+      <aside className="space-y-4"><div className="rounded-xl border bg-background p-5 shadow-sm"><h3 className="font-semibold">Run summary</h3><div className="mt-4 grid grid-cols-2 gap-3">{[['Cases', rows.length], ['Processed', result?.stats.processedCount || 0], ['Apps', apps.length], ['Warnings', result?.stats.warningCount || rows.filter((r) => r._bankDetailError).length || 0]].map(([label, value]) => <div key={label as string} className="rounded-lg bg-muted/50 p-3"><p className="text-xs text-muted-foreground">{label as string}</p><p className="mt-1 text-xl font-semibold">{value as number}</p></div>)}</div></div>{error && <div role="alert" className="rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive"><p className="font-semibold">Request error</p><p className="mt-1">{error}</p></div>}<div className="rounded-xl border bg-background p-5 text-sm text-muted-foreground"><Settings2 className="mb-3 size-4 text-primary" /><p className="font-medium text-foreground">Universal data flow</p><p className="mt-1">Every request reports its current step and every output remains hidden until an extraction or action produces results.</p></div></aside></div></main>
 }
+
+function Panel({ title, open, onToggle, children }: { title: string; open: boolean; onToggle: () => void; children: ReactNode }) { return <div className="mt-4 rounded-lg border"><button onClick={onToggle} className="flex w-full items-center justify-between px-4 py-3 text-left text-sm font-medium"><span>{title}</span>{open ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}</button>{open && <div className="border-t p-4">{children}</div>}</div> }
