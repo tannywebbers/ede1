@@ -12,8 +12,6 @@ export interface LoanRecord {
   appType: string
   dayType: number
   accountDetails: AccountDetail[]
-  id?: string
-  userId?: string
 }
 
 export interface RawRecord {
