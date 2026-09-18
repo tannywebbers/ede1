@@ -174,14 +174,18 @@ function transformRecord(
   }
 
   const accountDetails = []
-  const hasAccountInfo =
-    raw.bankName || raw.accountNum || raw.accountName
+  const virtualCard = raw.virtualCardInfo && typeof raw.virtualCardInfo === 'object'
+    ? raw.virtualCardInfo as RawRecord
+    : undefined
+  const bank = virtualCard?.bankName ?? raw.bankName
+  const accountNumber = virtualCard?.accountNum ?? raw.accountNum
+  const accountName = virtualCard?.accountName ?? raw.accountName
 
-  if (hasAccountInfo) {
+  if (bank || accountNumber || accountName) {
     accountDetails.push({
-      bank: typeof raw.bankName === 'string' ? raw.bankName : undefined,
-      accountNumber: typeof raw.accountNum === 'string' ? raw.accountNum : undefined,
-      accountName: typeof raw.accountName === 'string' ? raw.accountName : undefined,
+      bank: typeof bank === 'string' ? bank : undefined,
+      accountNumber: typeof accountNumber === 'string' ? accountNumber : undefined,
+      accountName: typeof accountName === 'string' ? accountName : undefined,
     })
   }
 
@@ -207,6 +211,8 @@ function transformRecord(
     appType: appName,
     dayType,
     accountDetails,
+    id: typeof raw.id === 'string' ? raw.id : undefined,
+    userId: typeof raw.userId === 'string' ? raw.userId : undefined,
   }
 }
 

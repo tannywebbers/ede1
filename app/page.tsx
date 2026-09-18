@@ -96,10 +96,11 @@ export default function Page() {
         if (!row.id) { enriched.push({ ...row, _bankDetailError: 'Missing case id' }); setLiveLog((log) => [...log, `FAILED ${row.orderNum || 'row'}: missing case id`]); continue }
         try {
           const response = await kimbo(`/adminApi/system/loan/order/${encodeURIComponent(String(row.id))}`, token)
-          const detail = response?.data?.data ?? response?.data ?? response
-          const matched = detail?.userId && row.userId && String(detail.userId) === String(row.userId)
-          enriched.push({ ...row, accountNum: detail?.accountNum, accountName: detail?.accountName, bankName: detail?.bankName, detailUserId: detail?.userId, _bankMatched: matched, _bankDetailLoaded: true })
-          setLiveLog((log) => [...log, `${matched ? 'SUCCESS' : 'CHECKED'} bank for ${row.orderNum || row.id}: ${detail?.bankName || 'no bank returned'}`])
+          const detail = response?.data?.virtualCardInfo ?? response?.data?.data?.virtualCardInfo ?? response?.virtualCardInfo ?? response?.data?.data ?? response?.data ?? response
+          const detailUserId = detail?.userId ?? detail?.virtualCardInfo?.userId
+          const matched = Boolean(detailUserId && row.userId && String(detailUserId) === String(row.userId))
+          enriched.push({ ...row, accountNum: detail?.accountNum, accountName: detail?.accountName, bankName: detail?.bankName, detailUserId, _bankMatched: matched, _bankDetailLoaded: true })
+          setLiveLog((log) => [...log, `${matched ? 'SUCCESS' : 'CHECKED'} bank for ${row.orderNum || row.id}: ${detail?.bankName || 'no bank returned'}${matched ? ` (userId ${detailUserId} matched)` : ' (userId did not match)'}`])
         } catch (e) { const message = e instanceof Error ? e.message : 'request failed'; enriched.push({ ...row, _bankDetailError: message }); setLiveLog((log) => [...log, `FAILED ${row.orderNum || row.id}: ${message}`]) }
       }
       setRows(enriched); setInput(JSON.stringify(enriched, null, 2)); const next = extractFromRawInput(JSON.stringify(enriched), true); setResult(next); setOutput(JSON.stringify(groupRecordsByApp(next.records), null, 2)); setOpenOutput(true); setStatus(`Bank update complete: ${enriched.filter((r) => r._bankMatched).length} matched`)
@@ -109,7 +110,7 @@ export default function Page() {
   const extractPhones = () => {
     const grouped = new Map<string, string[]>()
     sourceRows().forEach((row) => { const app = String(row.appName || 'Unknown app'); const phone = String(row.phone || row.phoneNumber || '').trim(); if (phone) grouped.set(app, [...(grouped.get(app) || []), phone]) })
-    const text = [...grouped].map(([app, phones]) => `${app}\n${[...new Set(phones)].map((phone) => mode === 'personalized' ? `customers:${phone}` : phone).join('\n')}`).join('\n\n'); setOutput(text); setOpenOutput(true); setStatus(`Extracted ${mode} phones for ${grouped.size} apps`)
+    const text = [...grouped].map(([app, phones]) => `${app}\n${[...new Set(phones)].map((phone) => { const row = sourceRows().find((candidate) => String(candidate.phone || candidate.phoneNumber || '').trim() === phone); return mode === 'personalized' ? `${String(row?.customerName || 'Unknown customer').trim()}:${phone}` : phone }).join('\n')}`).join('\n\n'); setOutput(text); setOpenOutput(true); setStatus(`Extracted ${mode} phones for ${grouped.size} apps`)
   }
 
   const extractContacts = async () => {
