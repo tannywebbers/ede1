@@ -1,648 +1,100 @@
 'use client'
 
-import { useState, useMemo } from 'react'
-import {
-  extractFromRawInput,
-  groupRecordsByApp,
-  removeDuplicates,
-} from '@/lib/extractor'
-import { formatNaira } from '@/lib/amount'
+import { useMemo, useState } from 'react'
+import { extractFromRawInput, groupRecordsByApp, removeDuplicates } from '@/lib/extractor'
 import { EXAMPLE_DATA } from '@/lib/example-data'
-import { LoanRecord, ExtractionResult } from '@/lib/types'
+import { ExtractionResult, LoanRecord } from '@/lib/types'
 import { Button } from '@/components/ui/button'
-import {
-  Copy,
-  Download,
-  RotateCcw,
-  Search,
-  Settings2,
-  Check,
-} from 'lucide-react'
+import { Check, Copy, Download, FileJson, Globe, Loader2, Save, Settings2, Upload, Wifi } from 'lucide-react'
 
-interface UIState {
-  input: string
-  result: ExtractionResult | null
-  activeTab: 'processed' | 'warnings' | 'excluded'
-  searchQuery: string
-  selectedApp: string
-  outputMode: 'grouped' | 'array' | 'text'
-  normalizePhone: boolean
-  removeDuplicates: boolean
-  showSettings: boolean
-  copiedSection: string | null
+type Tab = 'whatsapp' | 'phones' | 'sms' | 'remarks' | 'contacts' | 'settings'
+type ApiRow = Record<string, unknown>
+const LIST_PATH = '/adminApi/system/loan/collectionAssign/collect/case/list?pageNum=1&pageSize=200&recordType=0'
+const templates = ['2057421681597583361', '2062494888535728129']
+
+function rowsFrom(data: unknown): ApiRow[] {
+  if (Array.isArray(data)) return data.flatMap(rowsFrom)
+  if (!data || typeof data !== 'object') return []
+  const obj = data as ApiRow
+  if (Array.isArray(obj.rows)) return obj.rows.filter((r): r is ApiRow => !!r && typeof r === 'object')
+  if (obj.data && typeof obj.data === 'object') return rowsFrom(obj.data)
+  return [obj]
+}
+
+async function kimbo(path: string, token: string, method: 'GET' | 'POST' = 'GET', payload?: unknown) {
+  const response = await fetch('/api/kimbo', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path, token, method, payload }) })
+  const body = await response.json()
+  if (!response.ok) throw new Error(body.message || body.data?.msg || `Request failed (${response.status})`)
+  if (body.data?.code && body.data.code !== 200) throw new Error(body.data.msg || `Kimbo returned code ${body.data.code}`)
+  return body.data
 }
 
 export default function Page() {
-  const [state, setState] = useState<UIState>({
-    input: '',
-    result: null,
-    activeTab: 'processed',
-    searchQuery: '',
-    selectedApp: 'All Apps',
-    outputMode: 'grouped',
-    normalizePhone: true,
-    removeDuplicates: false,
-    showSettings: false,
-    copiedSection: null,
-  })
+  const [tab, setTab] = useState<Tab>('whatsapp')
+  const [input, setInput] = useState('')
+  const [result, setResult] = useState<ExtractionResult | null>(null)
+  const [rows, setRows] = useState<ApiRow[]>([])
+  const [token, setToken] = useState('')
+  const [saved, setSaved] = useState(false)
+  const [status, setStatus] = useState('Ready')
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [mode, setMode] = useState<'personalized' | 'plain'>('personalized')
+  const [template, setTemplate] = useState(templates[0])
+  const [remark, setRemark] = useState('')
+  const [contactResult, setContactResult] = useState('No Reply')
+  const [output, setOutput] = useState('')
 
-  const processedRecords = useMemo(() => {
-    if (!state.result) return []
+  const records = useMemo(() => result?.records ?? rows.map((r) => ({ loanId: String(r.orderNum ?? r.id ?? ''), name: String(r.customerName ?? ''), phone: String(r.phone ?? r.phoneNumber ?? ''), amount: Number(r.inpayAmount ?? 0), appType: String(r.appName ?? ''), dayType: Number(r.overdueDays ?? 0), accountDetails: [] } as LoanRecord)), [result, rows])
 
-    let records = state.result.records
+  const saveToken = () => { localStorage.setItem('kimbo-bearer-token', token.trim()); setSaved(true); setStatus('Bearer token saved in this browser'); setTimeout(() => setSaved(false), 1800) }
+  const loadToken = () => setToken(localStorage.getItem('kimbo-bearer-token') || '')
+  const clear = () => { setInput(''); setRows([]); setResult(null); setOutput(''); setError(''); setStatus('Ready') }
 
-    if (state.removeDuplicates) {
-      const { unique } = removeDuplicates(records)
-      records = unique
-    }
-
-    if (state.selectedApp !== 'All Apps') {
-      records = records.filter((r) => r.appType === state.selectedApp)
-    }
-
-    if (state.searchQuery) {
-      const q = state.searchQuery.toLowerCase()
-      records = records.filter(
-        (r) =>
-          r.loanId.toLowerCase().includes(q) ||
-          r.name.toLowerCase().includes(q) ||
-          r.phone.toLowerCase().includes(q) ||
-          r.appType.toLowerCase().includes(q)
-      )
-    }
-
-    return records
-  }, [state.result, state.selectedApp, state.searchQuery, state.removeDuplicates])
-
-  const uniqueApps = useMemo(() => {
-    if (!state.result) return []
-    return Array.from(state.result.stats.uniqueApps).sort()
-  }, [state.result])
-
-  const outputContent = useMemo(() => {
-    if (!state.result) return ''
-
-    const records = processedRecords
-
-    switch (state.outputMode) {
-      case 'grouped': {
-        const grouped = groupRecordsByApp(records)
-        return JSON.stringify(grouped, null, 2)
-      }
-      case 'array':
-        return JSON.stringify(records, null, 2)
-      case 'text': {
-        const grouped = groupRecordsByApp(records)
-        return Object.entries(grouped)
-          .map(
-            ([app, recs]) =>
-              `${app}\n\n${JSON.stringify(recs, null, 2)}`
-          )
-          .join('\n\n---\n\n')
-      }
-    }
-  }, [processedRecords, state.outputMode])
-
-  const handleExtract = () => {
-    const result = extractFromRawInput(state.input, state.normalizePhone)
-    setState((s) => ({ ...s, result }))
-  }
-
-  const handleLoadExample = () => {
-    setState((s) => ({ ...s, input: EXAMPLE_DATA }))
-  }
-
-  const handleClear = () => {
-    setState((s) => ({
-      ...s,
-      input: '',
-      result: null,
-      searchQuery: '',
-      selectedApp: 'All Apps',
-      copiedSection: null,
-    }))
-  }
-
-  const handleFormatInput = () => {
+  const fetchLive = async () => {
+    if (!token.trim()) { setError('Add and save a bearer token in Settings first.'); return }
+    setLoading(true); setError(''); setStatus('Fetching case list and bank details...')
     try {
-      const parsed = JSON.parse(state.input)
-      const formatted = JSON.stringify(parsed, null, 2)
-      setState((s) => ({ ...s, input: formatted }))
-    } catch {
-      // Not valid JSON, ignore
+      const first = await kimbo(LIST_PATH, token)
+      const cases = rowsFrom(first)
+      const enriched: ApiRow[] = []
+      for (const item of cases) {
+        const id = item.id
+        if (!id) { enriched.push(item); continue }
+        try { const detail = await kimbo(`/adminApi/system/loan/order/${encodeURIComponent(String(id))}`, token); enriched.push({ ...item, ...(detail?.data && typeof detail.data === 'object' ? detail.data : detail) }) }
+        catch (detailError) { enriched.push({ ...item, _detailError: detailError instanceof Error ? detailError.message : 'Bank detail request failed' }) }
+      }
+      setRows(enriched); setInput(JSON.stringify(enriched, null, 2)); setStatus(`Loaded ${enriched.length} cases with order details`)
+    } catch (e) { setError(e instanceof Error ? e.message : 'Token or network request failed.'); setStatus('Request failed') }
+    finally { setLoading(false) }
+  }
+
+  const extract = () => { const next = extractFromRawInput(input, true); setResult(next); setOutput(JSON.stringify(groupRecordsByApp(next.records), null, 2)); setStatus(`Extracted ${next.records.length} records`) }
+  const doAction = async (action: 'sms' | 'remark') => {
+    if (!token.trim()) { setError('Add and save a bearer token in Settings first.'); return }
+    const source = rows.length ? rows : rowsFrom(input ? JSON.parse(input) : [])
+    setLoading(true); setError(''); setOutput('')
+    const logs: string[] = []
+    for (const row of source) {
+      const orderNum = String(row.orderNum ?? '')
+      if (!orderNum) continue
+      try {
+        const path = action === 'sms' ? '/adminApi/system/loan/collectionAssign/sendSms' : '/adminApi/system/loan/collectionRecord'
+        const payload = action === 'sms' ? { orderNum, templateId: Number(template), country: row.country || 'NG', appName: row.appName || '' } : { orderNum, reachOutBy: 'Phone', contactRelations: 'Self', contactResult, collectionTag: contactResult, contactName: row.customerName || '', contactNo: row.phone || '', fraudVoucher: '', promisedTime: '', remark }
+        await kimbo(path, token, 'POST', payload); logs.push(`${action === 'sms' ? 'SMS SENT' : 'REPORT ADDED'} ${orderNum}`)
+      } catch (e) { logs.push(`FAILED ${action.toUpperCase()} ${orderNum}: ${e instanceof Error ? e.message : 'Unknown error'}`) }
     }
+    setOutput(logs.join('\n') || 'No orderNum values found.'); setStatus(`${action === 'sms' ? 'SMS' : 'Report'} batch finished`); setLoading(false)
   }
 
-  const handleCopy = (section: string) => {
-    navigator.clipboard.writeText(outputContent)
-    setState((s) => ({ ...s, copiedSection: section }))
-    setTimeout(() => {
-      setState((s) => ({ ...s, copiedSection: null }))
-    }, 2000)
-  }
+  const copy = () => { navigator.clipboard.writeText(output || input); setStatus('Copied output') }
+  const download = () => { const a = document.createElement('a'); a.href = `data:text/plain;charset=utf-8,${encodeURIComponent(output || input)}`; a.download = `${tab}-output.txt`; a.click() }
+  const nav: [Tab, string][] = [['whatsapp', 'WhatsApp'], ['phones', 'Phone Extractor'], ['sms', 'SMS'], ['remarks', 'Remarks'], ['contacts', 'Contact Extractor'], ['settings', 'Settings']]
 
-  const handleDownload = () => {
-    const element = document.createElement('a')
-    element.setAttribute(
-      'href',
-      'data:text/json;charset=utf-8,' + encodeURIComponent(outputContent)
-    )
-    element.setAttribute('download', 'processed-loans.json')
-    element.style.display = 'none'
-    document.body.appendChild(element)
-    element.click()
-    document.body.removeChild(element)
-  }
-
-  const stats = state.result?.stats
-
-  return (
-    <main className="min-h-screen bg-background">
-      <div className="flex flex-col lg:flex-row">
-        <div className="flex-1 border-r border-border p-6 lg:min-h-screen">
-          <div className="max-w-2xl">
-            <div className="mb-6">
-              <h1 className="text-2xl font-bold mb-1">Loan Dump Extractor</h1>
-              <p className="text-sm text-muted-foreground">
-                Extract, clean, transform and group raw loan data.
-              </p>
-            </div>
-
-            <div className="space-y-4">
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label className="text-sm font-medium">Paste Raw Data</label>
-                  <div className="flex gap-2">
-                    <Button
-                      size="xs"
-                      variant="ghost"
-                      onClick={handleLoadExample}
-                      className="text-xs"
-                    >
-                      Load Example
-                    </Button>
-                    <Button
-                      size="xs"
-                      variant="ghost"
-                      onClick={() =>
-                        setState((s) => ({
-                          ...s,
-                          showSettings: !s.showSettings,
-                        }))
-                      }
-                      className="text-xs"
-                    >
-                      <Settings2 className="size-3 mr-1" />
-                      Settings
-                    </Button>
-                  </div>
-                </div>
-
-                <textarea
-                  value={state.input}
-                  onChange={(e) =>
-                    setState((s) => ({ ...s, input: e.target.value }))
-                  }
-                  placeholder="Paste JSON, JSON fragments, API dumps, or raw text here..."
-                  className="w-full h-48 p-3 border border-border rounded-lg bg-background text-foreground text-sm font-mono resize-none focus:outline-none focus:ring-2 focus:ring-ring"
-                />
-              </div>
-
-              {state.showSettings && (
-                <div className="p-3 border border-border rounded-lg bg-muted/50 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <label className="text-sm font-medium">
-                      Normalize Nigerian phone numbers
-                    </label>
-                    <button
-                      onClick={() =>
-                        setState((s) => ({
-                          ...s,
-                          normalizePhone: !s.normalizePhone,
-                        }))
-                      }
-                      className="w-9 h-5 rounded-full bg-muted border border-border flex items-center transition-colors"
-                      style={{
-                        backgroundColor: state.normalizePhone
-                          ? 'var(--color-primary)'
-                          : 'var(--color-muted)',
-                      }}
-                    >
-                      <span
-                        className="w-4 h-4 rounded-full bg-white transition-transform"
-                        style={{
-                          transform: state.normalizePhone
-                            ? 'translateX(18px)'
-                            : 'translateX(2px)',
-                        }}
-                      />
-                    </button>
-                  </div>
-
-                  <div className="flex items-center justify-between pt-2 border-t border-border">
-                    <label className="text-sm font-medium">
-                      Remove exact duplicates
-                    </label>
-                    <button
-                      onClick={() =>
-                        setState((s) => ({
-                          ...s,
-                          removeDuplicates: !s.removeDuplicates,
-                        }))
-                      }
-                      className="w-9 h-5 rounded-full bg-muted border border-border flex items-center transition-colors"
-                      style={{
-                        backgroundColor: state.removeDuplicates
-                          ? 'var(--color-primary)'
-                          : 'var(--color-muted)',
-                      }}
-                    >
-                      <span
-                        className="w-4 h-4 rounded-full bg-white transition-transform"
-                        style={{
-                          transform: state.removeDuplicates
-                            ? 'translateX(18px)'
-                            : 'translateX(2px)',
-                        }}
-                      />
-                    </button>
-                  </div>
-
-                  <div className="pt-2 border-t border-border">
-                    <label className="text-sm font-medium block mb-2">
-                      Output Mode
-                    </label>
-                    <div className="flex gap-2">
-                      {(['grouped', 'array', 'text'] as const).map((mode) => (
-                        <button
-                          key={mode}
-                          onClick={() =>
-                            setState((s) => ({ ...s, outputMode: mode }))
-                          }
-                          className={`px-2 py-1 text-xs rounded border transition-colors ${
-                            state.outputMode === mode
-                              ? 'bg-primary text-primary-foreground border-primary'
-                              : 'border-border bg-background hover:bg-muted'
-                          }`}
-                        >
-                          {mode === 'grouped' ? 'Grouped' : mode === 'array' ? 'Array' : 'Text'}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              <div className="flex gap-2">
-                <Button
-                  onClick={handleExtract}
-                  className="flex-1"
-                >
-                  Extract Data
-                </Button>
-                <Button onClick={handleFormatInput} variant="outline" size="sm">
-                  Format
-                </Button>
-                <Button onClick={handleClear} variant="outline" size="sm">
-                  <RotateCcw className="size-4" />
-                </Button>
-              </div>
-            </div>
-
-            {stats && (
-              <div className="mt-8 p-4 border border-border rounded-lg bg-card">
-                <h3 className="font-medium text-sm mb-3">Extraction Report</h3>
-                <div className="grid grid-cols-2 gap-3 text-sm">
-                  <div>
-                    <div className="text-muted-foreground text-xs">Detected</div>
-                    <div className="font-mono font-semibold">
-                      {stats.rawCount}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-muted-foreground text-xs">
-                      Candidates
-                    </div>
-                    <div className="font-mono font-semibold">
-                      {stats.candidateCount}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-muted-foreground text-xs">
-                      Processed
-                    </div>
-                    <div className="font-mono font-semibold">
-                      {stats.processedCount}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-muted-foreground text-xs">Excluded</div>
-                    <div className="font-mono font-semibold">
-                      {stats.excludedCount}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-muted-foreground text-xs">Warnings</div>
-                    <div className="font-mono font-semibold">
-                      {stats.warningCount}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-muted-foreground text-xs">Apps</div>
-                    <div className="font-mono font-semibold">
-                      {stats.uniqueApps.size}
-                    </div>
-                  </div>
-                  {stats.processedCount > 0 && (
-                    <div className="col-span-2">
-                      <div className="text-muted-foreground text-xs">
-                        Total Amount
-                      </div>
-                      <div className="font-mono font-semibold">
-                        {formatNaira(stats.totalAmount)}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {!state.result && (
-              <div className="mt-8 p-4 border border-border rounded-lg bg-muted/50">
-                <div className="text-sm">
-                  <p className="font-medium mb-1">Local Processing</p>
-                  <p className="text-muted-foreground text-xs">
-                    Your raw data is processed in your browser and is not
-                    uploaded to a server.
-                  </p>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-
-        <div className="flex-1 p-6 lg:min-h-screen lg:overflow-y-auto">
-          <div className="max-w-2xl">
-            {!state.result ? (
-              <div className="text-center py-12">
-                <p className="text-muted-foreground">
-                  No data extracted yet. Paste raw data and click Extract.
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-6">
-                <div className="space-y-3">
-                  <div className="flex gap-2">
-                    <div className="flex-1 relative">
-                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
-                      <input
-                        type="text"
-                        placeholder="Search loan ID, name, phone or app..."
-                        value={state.searchQuery}
-                        onChange={(e) =>
-                          setState((s) => ({
-                            ...s,
-                            searchQuery: e.target.value,
-                          }))
-                        }
-                        className="w-full pl-9 pr-3 py-2 border border-border rounded-lg bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      onClick={() =>
-                        setState((s) => ({
-                          ...s,
-                          selectedApp: 'All Apps',
-                        }))
-                      }
-                      className={`px-3 py-1.5 text-xs rounded-full border transition-colors ${
-                        state.selectedApp === 'All Apps'
-                          ? 'bg-primary text-primary-foreground border-primary'
-                          : 'border-border bg-background hover:bg-muted'
-                      }`}
-                    >
-                      All Apps ({state.result.records.length})
-                    </button>
-                    {uniqueApps.map((app) => {
-                      const count = state.result.records.filter(
-                        (r) => r.appType === app
-                      ).length
-                      return (
-                        <button
-                          key={app}
-                          onClick={() =>
-                            setState((s) => ({
-                              ...s,
-                              selectedApp: app,
-                            }))
-                          }
-                          className={`px-3 py-1.5 text-xs rounded-full border transition-colors ${
-                            state.selectedApp === app
-                              ? 'bg-primary text-primary-foreground border-primary'
-                              : 'border-border bg-background hover:bg-muted'
-                          }`}
-                        >
-                          {app} ({count})
-                        </button>
-                      )
-                    })}
-                  </div>
-                </div>
-
-                <div className="border border-border rounded-lg overflow-hidden">
-                  <div className="flex border-b border-border bg-muted/30">
-                    {['processed', 'warnings', 'excluded'].map((tab) => (
-                      <button
-                        key={tab}
-                        onClick={() =>
-                          setState((s) => ({
-                            ...s,
-                            activeTab: tab as UIState['activeTab'],
-                          }))
-                        }
-                        className={`flex-1 px-3 py-2 text-xs font-medium transition-colors ${
-                          state.activeTab === tab
-                            ? 'bg-background border-b-2 border-primary text-foreground'
-                            : 'text-muted-foreground hover:text-foreground'
-                        }`}
-                      >
-                        {tab === 'processed'
-                          ? `Processed (${processedRecords.length})`
-                          : tab === 'warnings'
-                            ? `Warnings (${state.result.warnings.length})`
-                            : `Excluded (${state.result.excluded.length})`}
-                      </button>
-                    ))}
-                  </div>
-
-                  <div className="overflow-x-auto">
-                    {state.activeTab === 'processed' && (
-                      <table className="w-full text-sm">
-                        <thead className="bg-muted/30 border-b border-border">
-                          <tr>
-                            <th className="px-3 py-2 text-left font-medium">App</th>
-                            <th className="px-3 py-2 text-left font-medium">
-                              Loan ID
-                            </th>
-                            <th className="px-3 py-2 text-left font-medium">
-                              Customer
-                            </th>
-                            <th className="px-3 py-2 text-left font-medium">
-                              Phone
-                            </th>
-                            <th className="px-3 py-2 text-left font-medium">
-                              Amount
-                            </th>
-                            <th className="px-3 py-2 text-left font-medium">
-                              Days
-                            </th>
-                            <th className="px-3 py-2 text-left font-medium">
-                              Bank
-                            </th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {processedRecords.length === 0 ? (
-                            <tr>
-                              <td
-                                colSpan={7}
-                                className="px-3 py-4 text-center text-muted-foreground text-xs"
-                              >
-                                No records found
-                              </td>
-                            </tr>
-                          ) : (
-                            processedRecords.map((record, idx) => (
-                              <tr
-                                key={idx}
-                                className="border-b border-border hover:bg-muted/30 transition-colors"
-                              >
-                                <td className="px-3 py-2 font-mono text-xs">
-                                  {record.appType}
-                                </td>
-                                <td className="px-3 py-2 font-mono text-xs">
-                                  {record.loanId}
-                                </td>
-                                <td className="px-3 py-2 text-xs">
-                                  {record.name}
-                                </td>
-                                <td className="px-3 py-2 font-mono text-xs">
-                                  {record.phone}
-                                </td>
-                                <td className="px-3 py-2 font-mono text-xs font-medium">
-                                  {formatNaira(record.amount)}
-                                </td>
-                                <td className="px-3 py-2 font-mono text-xs">
-                                  {record.dayType}
-                                </td>
-                                <td className="px-3 py-2 text-xs">
-                                  {record.accountDetails[0]?.bank || '-'}
-                                </td>
-                              </tr>
-                            ))
-                          )}
-                        </tbody>
-                      </table>
-                    )}
-
-                    {state.activeTab === 'warnings' && (
-                      <div className="p-3 space-y-2">
-                        {state.result.warnings.length === 0 ? (
-                          <p className="text-muted-foreground text-xs py-4">
-                            No warnings
-                          </p>
-                        ) : (
-                          state.result.warnings.map((warning, idx) => (
-                            <div
-                              key={idx}
-                              className="p-2 border border-border rounded bg-background text-xs"
-                            >
-                              <div className="font-mono font-medium">
-                                {warning.recordId || 'Unknown'}
-                              </div>
-                              <div className="text-muted-foreground mt-1">
-                                {warning.message}
-                              </div>
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    )}
-
-                    {state.activeTab === 'excluded' && (
-                      <div className="p-3 space-y-2">
-                        {state.result.excluded.length === 0 ? (
-                          <p className="text-muted-foreground text-xs py-4">
-                            No excluded records
-                          </p>
-                        ) : (
-                          state.result.excluded.map((record, idx) => (
-                            <div
-                              key={idx}
-                              className="p-2 border border-border rounded bg-background text-xs"
-                            >
-                              <div className="flex justify-between">
-                                <div className="font-mono font-medium">
-                                  {record.loanId || 'Unknown'}
-                                </div>
-                                <div className="text-destructive">
-                                  {record.reason}
-                                </div>
-                              </div>
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <h3 className="font-medium text-sm">JSON Output</h3>
-                    <div className="flex gap-2">
-                      <Button
-                        size="xs"
-                        variant="outline"
-                        onClick={() => handleCopy('json')}
-                        className="text-xs"
-                      >
-                        {state.copiedSection === 'json' ? (
-                          <>
-                            <Check className="size-3 mr-1" />
-                            Copied
-                          </>
-                        ) : (
-                          <>
-                            <Copy className="size-3 mr-1" />
-                            Copy
-                          </>
-                        )}
-                      </Button>
-                      <Button
-                        size="xs"
-                        variant="outline"
-                        onClick={handleDownload}
-                        className="text-xs"
-                      >
-                        <Download className="size-3 mr-1" />
-                        Download
-                      </Button>
-                    </div>
-                  </div>
-
-                  <pre className="p-3 border border-border rounded-lg bg-muted/30 overflow-auto max-h-96 text-xs font-mono text-foreground">
-                    {outputContent}
-                  </pre>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-    </main>
-  )
+  return <main className="min-h-screen bg-muted/30 text-foreground"><header className="border-b bg-background"><div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-5"><div><p className="text-xs font-semibold uppercase tracking-[0.2em] text-primary">Collection workbench</p><h1 className="text-2xl font-semibold tracking-tight">Loan operations hub</h1></div><div className="flex items-center gap-2 text-xs text-muted-foreground"><Wifi className="size-4" /> {status}</div></div><nav className="mx-auto flex max-w-7xl gap-1 overflow-x-auto px-6">{nav.map(([key, label]) => <button key={key} onClick={() => setTab(key)} className={`border-b-2 px-4 py-3 text-sm font-medium whitespace-nowrap ${tab === key ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>{label}</button>)}</nav></header>
+    <div className="mx-auto grid max-w-7xl gap-6 p-6 lg:grid-cols-[minmax(0,1fr)_340px]">
+      <section className="rounded-xl border bg-background p-5 shadow-sm"><div className="mb-5 flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-lg font-semibold">{tab === 'settings' ? 'Universal settings' : `${nav.find(([key]) => key === tab)?.[1]} workspace`}</h2><p className="text-sm text-muted-foreground">All actions use the saved Kimbo bearer token.</p></div>{tab !== 'settings' && <div className="flex gap-2"><Button variant="outline" size="sm" onClick={clear}>Clear</Button><Button variant="outline" size="sm" onClick={copy}><Copy data-icon="inline-start" />Copy</Button><Button variant="outline" size="sm" onClick={download}><Download data-icon="inline-start" />Save</Button></div>}</div>
+      {tab === 'settings' ? <div className="max-w-xl space-y-5"><div className="rounded-lg border bg-muted/30 p-4"><h3 className="font-medium">Kimbo API access</h3><p className="mt-1 text-sm text-muted-foreground">The token is stored only in this browser&apos;s local cache and sent through the secure app proxy.</p><div className="mt-4 flex gap-2"><input value={token} onChange={(e) => setToken(e.target.value)} onFocus={loadToken} type="password" placeholder="Paste bearer token" className="min-w-0 flex-1 rounded-md border bg-background px-3 py-2 text-sm" /><Button onClick={saveToken}><Save data-icon="inline-start" />{saved ? 'Saved' : 'Save token'}</Button></div></div><div className="rounded-lg border p-4 text-sm text-muted-foreground"><p className="font-medium text-foreground">API flow</p><p className="mt-2">Case list → order detail by <code>id</code> → merged bank details. The order <code>id</code> is intentionally different from <code>orderNum</code>.</p></div></div> : <><div className="mb-4 flex flex-wrap gap-2"><Button onClick={fetchLive} disabled={loading}><Globe data-icon="inline-start" />{loading ? 'Working...' : 'Fetch from Kimbo'}</Button><Button variant="outline" onClick={() => setInput(EXAMPLE_DATA)}><FileJson data-icon="inline-start" />Load example</Button>{(tab === 'whatsapp' || tab === 'phones') && <Button variant="outline" onClick={extract}><Upload data-icon="inline-start" />Extract pasted data</Button>}</div>{(tab === 'sms' || tab === 'remarks') && <div className="mb-4 flex flex-wrap items-center gap-3 rounded-lg border bg-muted/30 p-3 text-sm">{tab === 'sms' ? <><label>Template <select value={template} onChange={(e) => setTemplate(e.target.value)} className="ml-2 rounded border bg-background px-2 py-1">{templates.map((id, i) => <option key={id} value={id}>Template {i + 1} — {id}</option>)}</select></label><Button size="sm" onClick={() => doAction('sms')} disabled={loading}>Send SMS to all</Button></> : <><input value={remark} onChange={(e) => setRemark(e.target.value)} placeholder="Remark" className="rounded border bg-background px-3 py-1.5" /><select value={contactResult} onChange={(e) => setContactResult(e.target.value)} className="rounded border bg-background px-2 py-1.5"><option>No Reply</option><option>Answered</option><option>No Answer</option><option>Wrong Number</option><option>Busy</option></select><Button size="sm" onClick={() => doAction('remark')} disabled={loading}>Add report to all</Button></>}</div>}{tab === 'phones' && <div className="mb-4 flex gap-2"><Button size="sm" variant={mode === 'personalized' ? 'default' : 'outline'} onClick={() => setMode('personalized')}>Personalized</Button><Button size="sm" variant={mode === 'plain' ? 'default' : 'outline'} onClick={() => setMode('plain')}>Plain</Button></div>}<div className="grid gap-4 lg:grid-cols-2"><textarea value={input} onChange={(e) => setInput(e.target.value)} placeholder="Paste raw JSON or fetch live data..." className="min-h-[430px] resize-y rounded-lg border bg-background p-3 font-mono text-xs outline-none focus:ring-2 focus:ring-ring" /><textarea readOnly value={output || (tab === 'phones' ? records.map((r) => mode === 'personalized' ? `${r.name}:${r.phone}` : r.phone).join('\n') : '')} placeholder="Output appears here..." className="min-h-[430px] resize-y rounded-lg border bg-muted/20 p-3 font-mono text-xs" /></div></>}</section>
+      <aside className="space-y-4"><div className="rounded-xl border bg-background p-5 shadow-sm"><h3 className="font-semibold">Run summary</h3><div className="mt-4 grid grid-cols-2 gap-3">{[['Cases', rows.length || result?.stats.rawCount || 0], ['Processed', result?.stats.processedCount || 0], ['Apps', result?.stats.uniqueApps.size || 0], ['Warnings', result?.stats.warningCount || 0]].map(([label, value]) => <div key={label} className="rounded-lg bg-muted/50 p-3"><p className="text-xs text-muted-foreground">{label}</p><p className="mt-1 text-xl font-semibold">{value}</p></div>)}</div></div>{error && <div role="alert" className="rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive"><p className="font-semibold">Request error</p><p className="mt-1">{error}</p></div>}<div className="rounded-xl border bg-background p-5 text-sm text-muted-foreground"><Settings2 className="mb-3 size-4 text-primary" /><p className="font-medium text-foreground">One token, every section</p><p className="mt-1">Configure access once in Settings. Live extraction reports authentication, API, and per-order detail errors instead of silently returning incomplete data.</p></div></aside>
+    </div></main>
 }
