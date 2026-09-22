@@ -111,7 +111,8 @@ export default function Page() {
 
   const sourceRows = () => {
     const source = rows.length ? rows : rowsFrom(JSON.parse(input))
-    const sorted = [...source].sort((a, b) => Number(b.inpayAmount ?? 0) - Number(a.inpayAmount ?? 0))
+    const eligible = source.filter((row) => Number(row.inpayAmount ?? 0) >= 0)
+    const sorted = [...eligible].sort((a, b) => Number(b.inpayAmount ?? 0) - Number(a.inpayAmount ?? 0))
     return topFilter === 'all' ? sorted : sorted.slice(0, Number(topFilter))
   }
 
