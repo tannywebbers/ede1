@@ -111,7 +111,8 @@ export default function Page() {
 
   const sourceRows = () => {
     const source = rows.length ? rows : rowsFrom(JSON.parse(input))
-    const sorted = [...source].sort((a, b) => Number(b.inpayAmount ?? 0) - Number(a.inpayAmount ?? 0))
+    const eligible = source.filter((row) => Number(row.inpayAmount ?? 0) >= 0)
+    const sorted = [...eligible].sort((a, b) => Number(b.inpayAmount ?? 0) - Number(a.inpayAmount ?? 0))
     return topFilter === 'all' ? sorted : sorted.slice(0, Number(topFilter))
   }
 
@@ -155,7 +156,7 @@ export default function Page() {
     setLoading(true); setError(''); setLiveLog(['Starting contact extraction...']); const results: ApiRow[] = []
     try {
       for (let i = 0; i < selectedRows.length; i++) { const row = selectedRows[i]; const userId = row.userId; if (!userId) continue; setStatus(`Fetching contacts ${i + 1} of ${rows.length}...`); setLiveLog((log) => [...log, `GET userContact/app/list?userId=${userId}`]); const response = await kimbo(`/adminApi/system/loan/userContact/app/list?userId=${encodeURIComponent(String(userId))}`, token); const data = response?.data || response; const contacts = [...(data?.contactList || []), ...(data?.emergencyContact || [])]; results.push({ row, contacts }); }
-      setContactRows(results); setOutput(results.map(({ row, contacts }) => { const customerName = String(row.customerName || 'Unknown customer').trim(); const numbers = [...new Set([row.phone, ...contacts.map((c: ApiRow) => c.contactNo || c.contactPhone)].map((value) => String(value || '').trim()).filter(Boolean))]; return numbers.map((number) => `${customerName}:${number}`).join('\n') }).filter(Boolean).join('\n\n')); setOpenOutput(true); setStatus(`Extracted contacts for ${results.length} customers`)
+      setContactRows(results); setOutput(results.map(({ row, contacts }) => { const customerName = String(row.customerName || 'Unknown customer').trim(); const customerPhone = String(row.phone || row.phoneNumber || '').trim(); const contactNumbers = contacts.map((c: ApiRow) => c.contactNo || c.contactPhone); const numbers = [...new Set([customerPhone, ...contactNumbers].map((value) => String(value || '').trim()).filter(Boolean))]; return numbers.map((number) => `${customerName}:${number}`).join('\n') }).filter(Boolean).join('\n\n')); setOpenOutput(true); setStatus(`Extracted contacts for ${results.length} customers`)
     } catch (e) { setError(e instanceof Error ? e.message : 'Contact request failed.') } finally { setLoading(false) }
   }
 
