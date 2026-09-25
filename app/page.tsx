@@ -122,7 +122,14 @@ export default function Page() {
   }
 
   const sourceRows = () => {
-    const source = rows.length ? rows : rowsFrom(JSON.parse(input))
+    let source: ApiRow[] = rows
+    if (!rows.length && input.trim()) {
+      try {
+        source = rowsFrom(JSON.parse(input))
+      } catch {
+        throw new Error('The loaded data is not valid JSON. Fetch raw Kimbo data again or paste a JSON array.')
+      }
+    }
     const eligible = source.filter((row) => (parseAmount(row.inpayAmount) ?? 0) > 100)
     const sorted = [...eligible].sort((a, b) => (parseAmount(b.inpayAmount) ?? 0) - (parseAmount(a.inpayAmount) ?? 0))
     return topFilter === 'all' ? sorted : sorted.slice(0, Number(topFilter))
