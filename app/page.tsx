@@ -23,9 +23,20 @@ function rowsFrom(value: any): ApiRow[] {
 }
 
 async function kimbo(path: string, token: string, method: 'GET' | 'POST' = 'GET', payload?: unknown) {
-  const response = await fetch('/api/kimbo', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path, token, method, payload }) })
-  const body = await response.json()
-  if (!response.ok) throw new Error(body.message || `Request failed (${response.status})`)
+  const response = await fetch('/api/kimbo', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ path, token, method, payload }),
+  })
+  const text = await response.text()
+  let body: { message?: string; data?: any } = {}
+  try {
+    body = text ? JSON.parse(text) : {}
+  } catch {
+    const contentType = response.headers.get('content-type') || 'unknown response'
+    throw new Error(`Request returned an invalid response (${response.status}, ${contentType}). Please try again.`)
+  }
+  if (!response.ok) throw new Error(body.message || body.data?.message || `Request failed (${response.status})`)
   if (body.data?.code && body.data.code !== 200) throw new Error(body.data.msg || `Kimbo returned code ${body.data.code}`)
   return body.data
 }
