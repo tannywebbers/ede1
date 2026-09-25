@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { extractFromRawInput } from '@/lib/extractor'
+import { parseAmount } from '@/lib/amount'
 import { EXAMPLE_DATA } from '@/lib/example-data'
 import type { ExtractionResult, LoanRecord } from '@/lib/types'
 import { Button } from '@/components/ui/button'
@@ -86,7 +87,7 @@ export default function Page() {
   }, [])
 
   const filteredRows = useMemo(() => {
-    const source = [...rows].sort((a, b) => Number(b.inpayAmount ?? 0) - Number(a.inpayAmount ?? 0))
+    const source = rows.filter((row) => (parseAmount(row.inpayAmount) ?? 0) > 100).sort((a, b) => (parseAmount(b.inpayAmount) ?? 0) - (parseAmount(a.inpayAmount) ?? 0))
     return topFilter === 'all' ? source : source.slice(0, Number(topFilter))
   }, [rows, topFilter])
   const records = useMemo(() => result?.records ?? filteredRows.map((r) => ({ loanId: String(r.orderNum ?? ''), name: String(r.customerName ?? r.name ?? ''), phone: String(r.phone ?? r.phoneNumber ?? ''), amount: Number(r.inpayAmount ?? 0), appType: String(r.appName ?? ''), dayType: Number(r.overdueDays ?? 0), accountDetails: r.accountNum ? [{ bank: r.bankName, accountNumber: r.accountNum, accountName: r.accountName }] : [] } as LoanRecord)), [result, filteredRows])
@@ -111,8 +112,8 @@ export default function Page() {
 
   const sourceRows = () => {
     const source = rows.length ? rows : rowsFrom(JSON.parse(input))
-    const eligible = source.filter((row) => Number(row.inpayAmount ?? 0) > 100)
-    const sorted = [...eligible].sort((a, b) => Number(b.inpayAmount ?? 0) - Number(a.inpayAmount ?? 0))
+    const eligible = source.filter((row) => (parseAmount(row.inpayAmount) ?? 0) > 100)
+    const sorted = [...eligible].sort((a, b) => (parseAmount(b.inpayAmount) ?? 0) - (parseAmount(a.inpayAmount) ?? 0))
     return topFilter === 'all' ? sorted : sorted.slice(0, Number(topFilter))
   }
 
