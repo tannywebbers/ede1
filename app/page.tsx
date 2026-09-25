@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { extractFromRawInput } from '@/lib/extractor'
+import { parseAmount } from '@/lib/amount'
 import { EXAMPLE_DATA } from '@/lib/example-data'
 import type { ExtractionResult, LoanRecord } from '@/lib/types'
 import { Button } from '@/components/ui/button'
@@ -22,9 +23,20 @@ function rowsFrom(value: any): ApiRow[] {
 }
 
 async function kimbo(path: string, token: string, method: 'GET' | 'POST' = 'GET', payload?: unknown) {
-  const response = await fetch('/api/kimbo', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path, token, method, payload }) })
-  const body = await response.json()
-  if (!response.ok) throw new Error(body.message || `Request failed (${response.status})`)
+  const response = await fetch('/api/kimbo', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ path, token, method, payload }),
+  })
+  const text = await response.text()
+  let body: { message?: string; data?: any } = {}
+  try {
+    body = text ? JSON.parse(text) : {}
+  } catch {
+    const contentType = response.headers.get('content-type') || 'unknown response'
+    throw new Error(`Request returned an invalid response (${response.status}, ${contentType}). Please try again.`)
+  }
+  if (!response.ok) throw new Error(body.message || body.data?.message || `Request failed (${response.status})`)
   if (body.data?.code && body.data.code !== 200) throw new Error(body.data.msg || `Kimbo returned code ${body.data.code}`)
   return body.data
 }
@@ -86,7 +98,7 @@ export default function Page() {
   }, [])
 
   const filteredRows = useMemo(() => {
-    const source = [...rows].sort((a, b) => Number(b.inpayAmount ?? 0) - Number(a.inpayAmount ?? 0))
+    const source = rows.filter((row) => (parseAmount(row.inpayAmount) ?? 0) > 100).sort((a, b) => (parseAmount(b.inpayAmount) ?? 0) - (parseAmount(a.inpayAmount) ?? 0))
     return topFilter === 'all' ? source : source.slice(0, Number(topFilter))
   }, [rows, topFilter])
   const records = useMemo(() => result?.records ?? filteredRows.map((r) => ({ loanId: String(r.orderNum ?? ''), name: String(r.customerName ?? r.name ?? ''), phone: String(r.phone ?? r.phoneNumber ?? ''), amount: Number(r.inpayAmount ?? 0), appType: String(r.appName ?? ''), dayType: Number(r.overdueDays ?? 0), accountDetails: r.accountNum ? [{ bank: r.bankName, accountNumber: r.accountNum, accountName: r.accountName }] : [] } as LoanRecord)), [result, filteredRows])
@@ -110,9 +122,16 @@ export default function Page() {
   }
 
   const sourceRows = () => {
-    const source = rows.length ? rows : rowsFrom(JSON.parse(input))
-    const eligible = source.filter((row) => Number(row.inpayAmount ?? 0) >= 0)
-    const sorted = [...eligible].sort((a, b) => Number(b.inpayAmount ?? 0) - Number(a.inpayAmount ?? 0))
+    let source: ApiRow[] = rows
+    if (!rows.length && input.trim()) {
+      try {
+        source = rowsFrom(JSON.parse(input))
+      } catch {
+        throw new Error('The loaded data is not valid JSON. Fetch raw Kimbo data again or paste a JSON array.')
+      }
+    }
+    const eligible = source.filter((row) => (parseAmount(row.inpayAmount) ?? 0) > 100)
+    const sorted = [...eligible].sort((a, b) => (parseAmount(b.inpayAmount) ?? 0) - (parseAmount(a.inpayAmount) ?? 0))
     return topFilter === 'all' ? sorted : sorted.slice(0, Number(topFilter))
   }
 

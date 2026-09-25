@@ -16,8 +16,7 @@ export function parseAmount(value: unknown): number | null {
   }
 
   if (!Number.isFinite(numValue)) return null
-  if (numValue === 0) return null
-  if (numValue < 0) return null
+  if (numValue <= 100) return null
 
   return numValue
 }
