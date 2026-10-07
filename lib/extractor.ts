@@ -173,11 +173,14 @@ function transformRecord(
     }
   }
 
-  const accountDetails = []
-  const bvnValue = raw.identityNo ?? (raw.userInfo && typeof raw.userInfo === 'object' ? (raw.userInfo as RawRecord).identityNo : undefined)
+  const identityNo = raw.identityNo ?? (raw.userInfo && typeof raw.userInfo === 'object' ? (raw.userInfo as RawRecord).identityNo : undefined)
+  const bvnValue = identityNo && typeof identityNo === 'object'
+    ? undefined
+    : identityNo
   const contactlist = Array.isArray(raw.contactlist)
     ? [...new Set(raw.contactlist.map((value) => String(value ?? '').trim()).filter(Boolean))]
     : undefined
+  const accountDetails = []
   const virtualCard = raw.virtualCardInfo && typeof raw.virtualCardInfo === 'object'
     ? raw.virtualCardInfo as RawRecord
     : undefined
@@ -214,10 +217,10 @@ function transformRecord(
     amount,
     appType: appName,
     dayType,
+    bvn: bvnValue == null ? undefined : String(bvnValue).trim() || undefined,
     accountDetails,
     id: typeof raw.id === 'string' ? raw.id : undefined,
     userId: typeof raw.userId === 'string' ? raw.userId : undefined,
-    bvn: bvnValue == null ? undefined : String(bvnValue).trim() || undefined,
     contactlist,
   }
 }
