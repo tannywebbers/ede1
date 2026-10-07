@@ -14,6 +14,8 @@ export interface LoanRecord {
   accountDetails: AccountDetail[]
   id?: string
   userId?: string
+  bvn?: string
+  contactlist?: string[]
 }
 
 export interface RawRecord {
