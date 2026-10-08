@@ -172,14 +172,32 @@ export default function Page() {
     const text = [...grouped].map(([app, phones]) => `${app}\n${[...new Set(phones)].map((phone) => { const row = sourceRows().find((candidate) => String(candidate.phone || candidate.phoneNumber || '').trim() === phone); return mode === 'personalized' ? `${String(row?.customerName || 'Unknown customer').trim()}:${phone}` : phone }).join('\n')}`).join('\n\n'); setOutput(text); setOpenOutput(true); setStatus(`Extracted ${mode} phones for ${grouped.size} apps`)
   }
 
-  const extractContacts = async () => {
-    if (!rows.length) return setError('Fetch raw Kimbo data first.')
+  const updateContactDetails = async () => {
     const selectedRows = sourceRows()
-    setLoading(true); setError(''); setLiveLog(['Starting contact extraction...']); const results: ApiRow[] = []
+    if (!selectedRows.length) return setError('Fetch and extract Kimbo data first.')
+    setLoading(true); setError(''); setLiveLog(['Starting contact detail update...']); const enriched: ApiRow[] = []
     try {
-      for (let i = 0; i < selectedRows.length; i++) { const row = selectedRows[i]; const userId = row.userId; if (!userId) continue; setStatus(`Fetching contacts ${i + 1} of ${rows.length}...`); setLiveLog((log) => [...log, `GET userContact/app/list?userId=${userId}`]); const response = await kimbo(`/adminApi/system/loan/userContact/app/list?userId=${encodeURIComponent(String(userId))}`, token); const data = response?.data || response; const contactSources = Array.isArray(data) ? data : [...(data?.contactList || []), ...(data?.emergencyContact || []), ...(data?.list || [])]; const contacts = contactSources.flatMap((entry: ApiRow) => Array.isArray(entry) ? entry : [entry]); const contactlist = [...new Set(contacts.map((c: ApiRow) => String(c.contactNo || c.contactPhone || c.phone || '').trim()).filter(Boolean))]; results.push({ ...row, contactlist }); }
-      setContactRows(results); setOutput(results.map((row) => { const customerName = String(row.customerName || 'Unknown customer').trim(); const customerPhone = String(row.phone || row.phoneNumber || '').trim(); const numbers = [...new Set([customerPhone, ...(row.contactlist || [])].map((value) => String(value || '').trim()).filter(Boolean))]; return numbers.map((number) => `${customerName}:${number}`).join('\\n') }).filter(Boolean).join('\\n\\n')); setOpenOutput(true); setStatus(`Extracted contacts for ${results.length} customers`)
-    } catch (e) { setError(e instanceof Error ? e.message : 'Contact request failed.') } finally { setLoading(false) }
+      for (let i = 0; i < selectedRows.length; i++) {
+        const row = selectedRows[i]; const userId = row.userId
+        setStatus(`Getting contacts ${i + 1} of ${selectedRows.length}...`)
+        if (!userId) { enriched.push({ ...row, contactlist: [] }); setLiveLog((log) => [...log, `FAILED ${row.orderNum || 'row'}: missing userId`]); continue }
+        try {
+          setLiveLog((log) => [...log, `GET userContact/app/list?userId=${userId}`])
+          const response = await kimbo(`/adminApi/system/loan/userContact/app/list?userId=${encodeURIComponent(String(userId))}`, token)
+          const data = response?.data || response
+          const contactSources = Array.isArray(data) ? data : [...(data?.contactList || []), ...(data?.emergencyContact || []), ...(data?.list || [])]
+          const contacts = contactSources.flatMap((entry: ApiRow) => Array.isArray(entry) ? entry : [entry])
+          const contactlist = [...new Set(contacts.map((c: ApiRow) => String(c.contactNo || c.contactPhone || c.phone || '').trim()).filter(Boolean))]
+          enriched.push({ ...row, contactlist }); setLiveLog((log) => [...log, `SUCCESS ${row.orderNum || userId}: ${contactlist.length} contacts`])
+        } catch (e) { const message = e instanceof Error ? e.message : 'request failed'; enriched.push({ ...row, contactlist: [], _contactError: message }); setLiveLog((log) => [...log, `FAILED ${row.orderNum || userId}: ${message}`]) }
+      }
+      setContactRows(enriched); setRows((current) => current.map((row) => enriched.find((item) => String(item.userId) === String(row.userId)) || row))
+      const next = extractFromRawInput(JSON.stringify(enriched), true); setResult(next); setOutput(JSON.stringify(next.records, null, 2)); setOpenOutput(true); setStatus(`Contact update complete: ${enriched.length} customers updated`)
+    } finally { setLoading(false); setTimeout(() => setLiveLog([]), 2500) }
+  }
+
+  const extractContacts = async () => {
+    await updateContactDetails()
   }
 
   const loadSmsTemplate = async () => {
@@ -207,6 +225,8 @@ export default function Page() {
         <div className="mb-3 flex items-center gap-2 rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground"><Wifi className="size-4 shrink-0" /><span className="truncate">{status}</span></div>{liveLog.length > 0 && <Panel title="Live request progress" open={true} onToggle={() => setLiveLog([])}><div className="max-h-48 overflow-auto rounded-md bg-muted/40 p-3 font-mono text-xs">{liveLog.map((line, i) => <div key={`${line}-${i}`} className="border-b border-border/50 py-1 last:border-0">{line}</div>)}</div></Panel>}
         {(tab === 'whatsapp' || tab === 'phones' || tab === 'contacts') && <Panel title="Input data" open={openInput} onToggle={() => setOpenInput(!openInput)}><textarea value={input} onChange={(e) => setInput(e.target.value)} placeholder="Fetch from Kimbo or paste JSON here" className="min-h-44 w-full rounded-md border bg-background p-3 font-mono text-xs" /></Panel>}
 
+        {tab === 'whatsapp' && <div className="mt-4 flex gap-2"></div>}
+        {tab === 'whatsapp' && <div className="mt-4 flex gap-2"><Button variant="outline" onClick={updateContactDetails} disabled={loading}>Update contact list</Button></div>}
         {tab === 'phones' && <div className="mt-4 flex gap-2"><Button variant={mode === 'personalized' ? 'default' : 'outline'} onClick={() => setMode('personalized')}>Personalized</Button><Button variant={mode === 'plain' ? 'default' : 'outline'} onClick={() => setMode('plain')}>Plain</Button></div>}
         {tab === 'sms' && <div className="flex flex-wrap items-end gap-3 rounded-lg border bg-muted/30 p-3 text-sm"><label className="flex flex-col gap-1">Template<select value={template} onChange={(e) => setTemplate(e.target.value)} className="rounded border bg-background px-2 py-2">{TEMPLATES.map((id, i) => <option key={id} value={id}>Template {i + 1} — {id}</option>)}</select></label><Button onClick={loadSmsTemplate} disabled={loading}>Preview template</Button><Button onClick={() => runAction('sms')} disabled={loading}>Send SMS to all</Button></div>}
         {tab === 'remarks' && <div className="grid gap-3 rounded-lg border bg-muted/30 p-3 text-sm sm:grid-cols-2">{[['Reach out by', reachOutBy, setReachOutBy, ['Phone', 'Whatsapp', 'Sms']], ['Contact relations', contactRelations, setContactRelations, ['Self', 'Contact']], ['Contact result', contactResult, setContactResult, ['No Reply']], ['Collection tag', collectionTag, setCollectionTag, ['No Answer', 'Sent Unread', 'Read', 'Unavailable', 'Not on whatsapp']]].map(([label, value, setter, options]: any) => <label key={label as string} className="flex flex-col gap-1">{label as string}<select value={value as string} onChange={(e) => setter(e.target.value)} className="rounded border bg-background px-2 py-2">{options.map((option: string) => <option key={option}>{option}</option>)}</select></label>)}<input placeholder="Remark (optional)" value={remark} onChange={(e) => setRemark(e.target.value)} className="rounded border bg-background px-3 py-2" /><input placeholder="Contact name (optional)" value={contactName} onChange={(e) => setContactName(e.target.value)} className="rounded border bg-background px-3 py-2" /><input placeholder="Contact no. (optional)" value={contactNo} onChange={(e) => setContactNo(e.target.value)} className="rounded border bg-background px-3 py-2" /><Button onClick={() => runAction('remark')} disabled={loading}>Save remarks for all</Button></div>}
