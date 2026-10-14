@@ -216,6 +216,24 @@ export default function Page() {
   const copy = () => { navigator.clipboard.writeText(output); setStatus('Output copied') }
   const save = () => {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+    if (tab === 'phones' && mode === 'personalized') {
+      const csvEscape = (value: string) => `"${value.replaceAll('"', '""')}"`
+      const googleHeaders = 'Name Prefix,First Name,Middle Name,Last Name,Name Suffix,Phonetic First Name,Phonetic Middle Name,Phonetic Last Name,Nickname,File As,E-mail 1 - Label,E-mail 1 - Value,Phone 1 - Label,Phone 1 - Value,Address 1 - Label,Address 1 - Country,Address 1 - Street,Address 1 - Extended Address,Address 1 - City,Address 1 - Region,Address 1 - Postal Code,Address 1 - PO Box,Organization Name,Organization Title,Organization Department,Birthday,Event 1 - Label,Event 1 - Value,Relation 1 - Label,Relation 1 - Value,Website 1 - Label,Website 1 - Value,Custom Field 1 - Label,Custom Field 1 - Value,Notes,Labels'
+      const rowsForCsv = sourceRows().flatMap((row) => {
+        const name = String(row.customerName || row.name || 'Unknown customer').trim()
+        const phone = String(row.phone || row.phoneNumber || '').trim()
+        if (!phone) return []
+        const nameParts = name.split(/\s+/)
+        const firstName = nameParts.shift() || ''
+        const lastName = nameParts.pop() || ''
+        const middleName = nameParts.join(' ')
+        const columns = Array(36).fill('')
+        columns[1] = firstName; columns[2] = middleName; columns[3] = lastName; columns[9] = name; columns[12] = 'Mobile'; columns[13] = phone
+        return [columns.map((value) => csvEscape(value)).join(',')]
+      })
+      downloadFile(`phone-contacts-${timestamp}.csv`, [googleHeaders, ...rowsForCsv].join('\n'), 'text/csv;charset=utf-8')
+      return
+    }
     downloadFile(`${tab}-output-${timestamp}.${tab === 'whatsapp' ? 'json' : 'txt'}`, output, tab === 'whatsapp' ? 'application/json' : 'text/plain')
   }
 
